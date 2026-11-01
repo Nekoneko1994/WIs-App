@@ -4,15 +4,19 @@ import {
   TileLayer,
   Circle,
   Popup,
+  Marker,
   useMap,
 } from 'react-leaflet'
+import L from 'leaflet'
 
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
 // ============================================================
-// WIs App v3.0
+// WIs App v3.1
 // ============================================================
+
+// Species
 
 const SPECIES = [
   { id: 'blue', name: 'Blue duiker', icon: '🦌' },
@@ -22,28 +26,43 @@ const SPECIES = [
   { id: 'rat', name: "Emin's pouched rat", icon: '🐀' },
 ]
 
-const IDS = SPECIES.map((s) => s.id)
+const IDS = SPECIES.map((species) => species.id)
+
 const METHODS = ['Gun', 'Snare', 'Other']
-const PERIODS = ['Morning', 'Afternoon', 'Night', 'Unknown']
+
+const PERIODS = [
+  'Morning',
+  'Afternoon',
+  'Night',
+  'Unknown',
+]
 
 const EMPTY = () =>
-  Object.fromEntries(IDS.map((id) => [id, 0]))
+  Object.fromEntries(
+    IDS.map((id) => [id, 0])
+  )
 
 const EMPTY_BY_METHOD = () =>
-  Object.fromEntries(METHODS.map((m) => [m, EMPTY()]))
+  Object.fromEntries(
+    METHODS.map((method) => [method, EMPTY()])
+  )
+
+// Database
 
 const DB_NAME = 'wis-app-records-v1'
-const STORE = 'records'
+const DB_STORE = 'records'
 const SETTINGS_KEY = 'wis-app-settings-v2'
+
 const SETTINGS_PASSWORD = '6918'
+
+// Default settings
 
 const DEFAULT_SETTINGS = {
   hunterId: '',
+
   clusterDistance: 30,
   circleRadius: 30,
   maxGpsAccuracy: 100,
-  colorMin: 0,
-  colorMax: 3,
 
   masses: {
     blue: 4.5,
@@ -53,9 +72,11 @@ const DEFAULT_SETTINGS = {
     rat: 1.0,
   },
 
-  // Values previously identified from secondary
-  // tabulation attributed to Fa et al. (2015).
-  // Verify against the original source before publication.
+  // Values attributed to Fa et al. (2015)
+  // through a secondary tabulation.
+  // Direct verification against the original
+  // supplementary dataset remains necessary.
+
   rmax: {
     blue: 0.49,
     peters: 0.44,
@@ -64,6 +85,8 @@ const DEFAULT_SETTINGS = {
     rat: 0.70,
   },
 }
+
+// Indicators
 
 const INDICATORS = [
   ['rb', 'R/B ratio'],
@@ -76,23 +99,74 @@ const INDICATORS = [
   ['snareCpue', 'Snare CPUE'],
 ]
 
+// Fixed color scales for composition indicators
+
+const FIXED_SCALES = {
+  rb: {
+    min: 0,
+    middle: 1,
+    max: 2,
+  },
+
+  dr: {
+    min: 0,
+    middle: 1,
+    max: 2,
+  },
+
+  red: {
+    min: 0,
+    middle: 0.5,
+    max: 1,
+  },
+
+  duiker: {
+    min: 0,
+    middle: 0.5,
+    max: 1,
+  },
+}
+
+// Leaflet marker icon fix
+
+delete L.Icon.Default.prototype._getIconUrl
+
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl:
+    'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
+
+  iconUrl:
+    'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
+
+  shadowUrl:
+    'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+})
+
 // ============================================================
 // IndexedDB
 // ============================================================
 
 function openDb() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1)
+    const request = indexedDB.open(DB_NAME, 1)
 
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: 'id' })
+    request.onupgradeneeded = () => {
+      const db = request.result
+
+      if (!db.objectStoreNames.contains(DB_STORE)) {
+        db.createObjectStore(DB_STORE, {
+          keyPath: 'id',
+        })
       }
     }
 
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    request.onsuccess = () => {
+      resolve(request.result)
+    }
+
+    request.onerror = () => {
+      reject(request.error)
+    }
   })
 }
 
@@ -100,75 +174,118 @@ async function databaseAction(action, data) {
   const db = await openDb()
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(
-      STORE,
+    const transaction = db.transaction(
+      DB_STORE,
       action === 'read' ? 'readonly' : 'readwrite'
     )
-    const store = tx.objectStore(STORE)
+
+    const store = transaction.objectStore(DB_STORE)
+
     let result
 
     if (action === 'read') {
-      const req = store.getAll()
-      req.onsuccess = () => { result = req.result }
-    } else if (action === 'put') {
-      store.put(data)
-    } else if (action === 'delete') {
-      store.delete(data)
-    } else if (action === 'putMany') {
-      for (const item of data) store.put(item)
+      const request = store.getAll()
+
+      request.onsuccess = () => {
+        result = request.result
+      }
     }
 
-    tx.oncomplete = () => {
+    if (action === 'put') {
+      store.put(data)
+    }
+
+    if (action === 'delete') {
+      store.delete(data)
+    }
+
+    if (action === 'putMany') {
+      for (const record of data) {
+        store.put(record)
+      }
+    }
+
+    transaction.oncomplete = () => {
       db.close()
       resolve(result)
     }
-    tx.onerror = () => {
+
+    transaction.onerror = () => {
       db.close()
-      reject(tx.error)
+      reject(transaction.error)
     }
-    tx.onabort = () => {
+
+    transaction.onabort = () => {
       db.close()
-      reject(tx.error || new Error('Transaction aborted'))
+      reject(
+        transaction.error ||
+        new Error('Database transaction aborted')
+      )
     }
   })
 }
 
 // ============================================================
-// Utilities
+// Date utilities
 // ============================================================
 
 function today(offset = 0) {
-  const d = new Date()
-  d.setDate(d.getDate() - offset)
+  const date = new Date()
 
-  return [
-    d.getFullYear(),
-    String(d.getMonth() + 1).padStart(2, '0'),
-    String(d.getDate()).padStart(2, '0'),
-  ].join('-')
+  date.setDate(
+    date.getDate() - offset
+  )
+
+  const year = date.getFullYear()
+
+  const month = String(
+    date.getMonth() + 1
+  ).padStart(2, '0')
+
+  const day = String(
+    date.getDate()
+  ).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
 }
 
 function validDate(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false
+  }
 
-  const [y, m, d] = value.split('-').map(Number)
-  const x = new Date(y, m - 1, d)
+  const [year, month, day] = value
+    .split('-')
+    .map(Number)
+
+  const date = new Date(
+    year,
+    month - 1,
+    day
+  )
 
   return (
-    x.getFullYear() === y &&
-    x.getMonth() + 1 === m &&
-    x.getDate() === d &&
+    date.getFullYear() === year &&
+    date.getMonth() + 1 === month &&
+    date.getDate() === day &&
     value <= today()
   )
 }
+
+// ============================================================
+// Record utilities
+// ============================================================
 
 function cleanCounts(input = {}) {
   return Object.fromEntries(
     IDS.map((id) => {
       const value = Number(input[id] ?? 0)
+
       return [
         id,
-        Number.isInteger(value) && value >= 0 ? value : 0,
+        Number.isInteger(value) && value >= 0
+          ? value
+          : 0,
       ]
     })
   )
@@ -183,26 +300,34 @@ function cleanByMethod(input = {}) {
   )
 }
 
-// Compatibility with older WIs App records.
-// Their single huntingMethod is assigned to all species counts.
+// Compatibility with older records
+
 function getByMethod(record) {
   if (record.byMethod) {
     return cleanByMethod(record.byMethod)
   }
 
   const result = EMPTY_BY_METHOD()
+
   const method =
-    record.huntingMethod || record.method || 'Other'
+    record.huntingMethod ||
+    record.method ||
+    'Other'
 
   if (METHODS.includes(method)) {
-    result[method] = cleanCounts(record.counts)
+    result[method] = cleanCounts(
+      record.counts || {}
+    )
   }
 
   return result
 }
 
 function countTotal(counts) {
-  return IDS.reduce((sum, id) => sum + (counts[id] || 0), 0)
+  return IDS.reduce(
+    (sum, id) => sum + (counts[id] || 0),
+    0
+  )
 }
 
 function totalsOf(records) {
@@ -226,32 +351,60 @@ function totalsByMethod(records, method) {
 
   for (const record of records) {
     const matrix = getByMethod(record)
-    for (const id of IDS) totals[id] += matrix[method][id]
+
+    for (const id of IDS) {
+      totals[id] += matrix[method][id]
+    }
   }
 
   return totals
 }
 
-function sorted(records) {
-  return [...records].sort((a, b) =>
-    (b.recordedAt || '').localeCompare(b.recordedAt || '')
-  )
+// NEW: chronological history
+//
+// First: capture date, newest first.
+// Second: recording timestamp, newest first.
+
+function sortRecords(records) {
+  return [...records].sort((a, b) => {
+    const dateComparison =
+      (b.captureDate || '').localeCompare(
+        a.captureDate || ''
+      )
+
+    if (dateComparison !== 0) {
+      return dateComparison
+    }
+
+    return (b.recordedAt || '').localeCompare(
+      a.recordedAt || ''
+    )
+  })
 }
 
 function fmt(value, digits = 3) {
-  return value == null || !Number.isFinite(value)
-    ? 'N/A'
-    : Number(value).toFixed(digits)
+  if (
+    value == null ||
+    !Number.isFinite(value)
+  ) {
+    return 'N/A'
+  }
+
+  return Number(value).toFixed(digits)
 }
 
 function blankForm() {
   return {
     id: null,
+
     captureDate: today(),
     period: 'Morning',
+
     byMethod: EMPTY_BY_METHOD(),
+
     gunEffort: '',
     snareEffort: '',
+
     note: '',
     previousLocation: null,
   }
@@ -262,21 +415,30 @@ function blankForm() {
 // ============================================================
 
 function calculateIndicators(counts, settings) {
-  const blue = counts.blue
-  const red = counts.peters + counts.bay
-  const duikers = red + blue
-  const rodents = counts.porcupine + counts.rat
+  const blue = counts.blue || 0
+
+  const red =
+    (counts.peters || 0) +
+    (counts.bay || 0)
+
+  const duikers = blue + red
+
+  const rodents =
+    (counts.porcupine || 0) +
+    (counts.rat || 0)
+
   const total = duikers + rodents
 
-  const ratio = (a, b) => b > 0 ? a / b : null
+  const ratio = (a, b) =>
+    b > 0 ? a / b : null
 
-  function weighted(key) {
+  function weightedAverage(key) {
     if (total === 0) return null
 
-    let sum = 0
+    let weightedTotal = 0
 
     for (const id of IDS) {
-      if (counts[id] === 0) continue
+      if (!counts[id]) continue
 
       const raw = settings[key]?.[id]
       const value = Number(raw)
@@ -290,56 +452,90 @@ function calculateIndicators(counts, settings) {
         return null
       }
 
-      sum += counts[id] * value
+      weightedTotal += counts[id] * value
     }
 
-    return sum / total
+    return weightedTotal / total
   }
 
-  const mass = weighted('masses')
-  const meanRmax = weighted('rmax')
+  const mass = weightedAverage('masses')
+  const meanRmax = weightedAverage('rmax')
 
   return {
     rb: ratio(red, blue),
+
     red: ratio(red, duikers),
+
     dr: ratio(duikers, rodents),
+
     duiker: ratio(duikers, total),
+
     mass,
-    rmax: meanRmax > 0 ? 1 / meanRmax : null,
+
+    rmax:
+      meanRmax > 0
+        ? 1 / meanRmax
+        : null,
+
     total,
   }
 }
 
-function cpue(records, method) {
-  const key = method === 'Gun' ? 'gunEffort' : 'snareEffort'
-  const unit = method === 'Gun' ? 'hunter-day' : 'trap-night'
+// ============================================================
+// CPUE
+// ============================================================
 
-  let catchCount = 0
-  let effort = 0
+function calculateCpue(records, method) {
+  const effortKey =
+    method === 'Gun'
+      ? 'gunEffort'
+      : 'snareEffort'
+
+  const legacyUnit =
+    method === 'Gun'
+      ? 'hunter-day'
+      : 'trap-night'
+
+  let totalEffort = 0
+  let totalCatch = 0
 
   for (const record of records) {
-    const value =
-      record[key] ??
-      (
-        (record.huntingMethod || record.method) === method &&
-        record.effortUnit === unit
-          ? record.effort
-          : null
-      )
+    let effort = record[effortKey]
 
-    // Exclude records with missing effort.
+    // Compatibility with previous record format
+
+    if (effort == null) {
+      const previousMethod =
+        record.huntingMethod ||
+        record.method
+
+      if (
+        previousMethod === method &&
+        record.effortUnit === legacyUnit
+      ) {
+        effort = record.effort
+      }
+    }
+
     if (
-      value === '' ||
-      value == null ||
-      !Number.isFinite(Number(value)) ||
-      Number(value) <= 0
-    ) continue
+      effort === '' ||
+      effort == null ||
+      !Number.isFinite(Number(effort)) ||
+      Number(effort) <= 0
+    ) {
+      continue
+    }
 
-    effort += Number(value)
-    catchCount += countTotal(getByMethod(record)[method])
+    totalEffort += Number(effort)
+
+    totalCatch += countTotal(
+      getByMethod(record)[method]
+    )
   }
 
-  return effort > 0 ? catchCount / effort : null
+  return totalEffort > 0
+    ? totalCatch / totalEffort
+    : null
 }
 
 // ============================================================
@@ -349,18 +545,28 @@ function cpue(records, method) {
 function getPosition() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
-      reject(new Error('Geolocation unavailable'))
+      reject(
+        new Error('Geolocation is unavailable')
+      )
       return
     }
 
     navigator.geolocation.getCurrentPosition(
-      (p) => resolve({
-        latitude: p.coords.latitude,
-        longitude: p.coords.longitude,
-        accuracy: p.coords.accuracy,
-        timestamp: new Date(p.timestamp).toISOString(),
-      }),
-      reject,
+      (position) => {
+        resolve({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          timestamp: new Date(
+            position.timestamp
+          ).toISOString(),
+        })
+      },
+
+      (error) => {
+        reject(error)
+      },
+
       {
         enableHighAccuracy: true,
         maximumAge: 0,
@@ -370,135 +576,405 @@ function getPosition() {
   })
 }
 
-function validLocation(p) {
+function validLocation(location) {
+  if (!location) return false
+
+  const latitude = Number(
+    location.latitude
+  )
+
+  const longitude = Number(
+    location.longitude
+  )
+
   return (
-    p &&
-    Number.isFinite(Number(p.latitude)) &&
-    Number.isFinite(Number(p.longitude)) &&
-    Math.abs(Number(p.latitude)) <= 90 &&
-    Math.abs(Number(p.longitude)) <= 180
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180
   )
 }
 
-const EARTH_R = 6371000
-const rad = (x) => x * Math.PI / 180
+const EARTH_RADIUS = 6371000
 
-function distance(a, b) {
-  const dLat = rad(b.latitude - a.latitude)
-  const dLon = rad(b.longitude - a.longitude)
-
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(rad(a.latitude)) *
-    Math.cos(rad(b.latitude)) *
-    Math.sin(dLon / 2) ** 2
-
-  return 2 * EARTH_R * Math.asin(Math.min(1, Math.sqrt(h)))
+function radians(degrees) {
+  return degrees * Math.PI / 180
 }
 
-// Complete-linkage clustering.
-// Every pair of GPS points in a cluster remains within threshold.
+function distance(a, b) {
+  const deltaLatitude = radians(
+    b.latitude - a.latitude
+  )
+
+  const deltaLongitude = radians(
+    b.longitude - a.longitude
+  )
+
+  const h =
+    Math.sin(deltaLatitude / 2) ** 2 +
+    Math.cos(radians(a.latitude)) *
+    Math.cos(radians(b.latitude)) *
+    Math.sin(deltaLongitude / 2) ** 2
+
+  return (
+    2 *
+    EARTH_RADIUS *
+    Math.asin(
+      Math.min(1, Math.sqrt(h))
+    )
+  )
+}
+
+// ============================================================
+// Complete-linkage GPS clustering
+// ============================================================
+
 function clusterRecords(records, threshold) {
   let groups = records
-    .filter((r) => validLocation(r.location))
-    .map((r) => [r])
+    .filter(
+      (record) => validLocation(record.location)
+    )
+    .map((record) => [record])
 
-  function maximumDistance(a, b) {
-    let max = 0
-    for (const x of a) {
-      for (const y of b) {
-        max = Math.max(max, distance(x.location, y.location))
+  function maximumDistance(groupA, groupB) {
+    let maximum = 0
+
+    for (const a of groupA) {
+      for (const b of groupB) {
+        maximum = Math.max(
+          maximum,
+          distance(a.location, b.location)
+        )
       }
     }
-    return max
+
+    return maximum
   }
 
   while (groups.length > 1) {
-    let best = null
-    let min = Infinity
+    let bestPair = null
+    let bestDistance = Infinity
 
     for (let i = 0; i < groups.length; i++) {
       for (let j = i + 1; j < groups.length; j++) {
-        const d = maximumDistance(groups[i], groups[j])
-        if (d <= threshold && d < min) {
-          min = d
-          best = [i, j]
+        const d = maximumDistance(
+          groups[i],
+          groups[j]
+        )
+
+        if (
+          d <= threshold &&
+          d < bestDistance
+        ) {
+          bestPair = [i, j]
+          bestDistance = d
         }
       }
     }
 
-    if (!best) break
+    if (!bestPair) break
 
-    const [i, j] = best
-    const merged = [...groups[i], ...groups[j]]
+    const [i, j] = bestPair
 
-    groups = groups.filter((_, k) => k !== i && k !== j)
+    const merged = [
+      ...groups[i],
+      ...groups[j],
+    ]
+
+    groups = groups.filter(
+      (_, index) =>
+        index !== i &&
+        index !== j
+    )
+
     groups.push(merged)
   }
 
   return groups.map((group, index) => ({
     id: index + 1,
+
     records: group,
+
     latitude:
-      group.reduce((s, r) => s + r.location.latitude, 0) /
-      group.length,
+      group.reduce(
+        (sum, record) =>
+          sum + Number(record.location.latitude),
+        0
+      ) / group.length,
+
     longitude:
-      group.reduce((s, r) => s + r.location.longitude, 0) /
-      group.length,
+      group.reduce(
+        (sum, record) =>
+          sum + Number(record.location.longitude),
+        0
+      ) / group.length,
   }))
 }
 
 // ============================================================
-// Map
+// NEW: Map color scales
+// ============================================================
+
+const RED = [220, 55, 55]
+const YELLOW = [240, 205, 45]
+const GREEN = [40, 150, 85]
+
+function clamp(value, minimum, maximum) {
+  return Math.min(
+    maximum,
+    Math.max(minimum, value)
+  )
+}
+
+function interpolateColor(start, end, fraction) {
+  const t = clamp(fraction, 0, 1)
+
+  const rgb = start.map(
+    (component, i) =>
+      Math.round(
+        component +
+        (end[i] - component) * t
+      )
+  )
+
+  return `rgb(${rgb.join(',')})`
+}
+
+function getColor(value, minimum, maximum) {
+  if (
+    value == null ||
+    !Number.isFinite(value)
+  ) {
+    return '#999999'
+  }
+
+  if (
+    !Number.isFinite(minimum) ||
+    !Number.isFinite(maximum) ||
+    maximum <= minimum
+  ) {
+    return '#999999'
+  }
+
+  const t = clamp(
+    (value - minimum) /
+      (maximum - minimum),
+    0,
+    1
+  )
+
+  if (t <= 0.5) {
+    return interpolateColor(
+      RED,
+      YELLOW,
+      t * 2
+    )
+  }
+
+  return interpolateColor(
+    YELLOW,
+    GREEN,
+    (t - 0.5) * 2
+  )
+}
+
+// Fixed scales for R/B, D/R,
+// Red proportion and Duiker proportion.
+//
+// Other indicators use their own
+// observed-value ranges.
+
+function getMapScale(indicatorId, clusters) {
+  if (FIXED_SCALES[indicatorId]) {
+    return FIXED_SCALES[indicatorId]
+  }
+
+  const values = clusters
+    .map(
+      (cluster) =>
+        cluster.metrics[indicatorId]
+    )
+    .filter(
+      (value) =>
+        value != null &&
+        Number.isFinite(value)
+    )
+
+  if (!values.length) {
+    return {
+      min: 0,
+      middle: 0.5,
+      max: 1,
+    }
+  }
+
+  const minimum = Math.min(...values)
+  const maximum = Math.max(...values)
+
+  if (minimum === maximum) {
+    // No spatial variation:
+    // show every valid cluster as yellow.
+    return {
+      min: minimum - 0.5,
+      middle: minimum,
+      max: minimum + 0.5,
+    }
+  }
+
+  return {
+    min: minimum,
+    middle: (minimum + maximum) / 2,
+    max: maximum,
+  }
+}
+
+// ============================================================
+// Map components
 // ============================================================
 
 function FitBounds({ clusters }) {
   const map = useMap()
 
   useEffect(() => {
-    if (!clusters.length) return
+    if (clusters.length === 0) return
 
     if (clusters.length === 1) {
       map.setView(
-        [clusters[0].latitude, clusters[0].longitude],
+        [
+          clusters[0].latitude,
+          clusters[0].longitude,
+        ],
         17
       )
-    } else {
-      map.fitBounds(
-        clusters.map((c) => [c.latitude, c.longitude]),
-        { padding: [45, 45], maxZoom: 17 }
-      )
+
+      return
     }
+
+    map.fitBounds(
+      clusters.map((cluster) => [
+        cluster.latitude,
+        cluster.longitude,
+      ]),
+
+      {
+        padding: [45, 45],
+        maxZoom: 17,
+      }
+    )
   }, [clusters, map])
 
   return null
 }
 
-function color(value, min, max) {
-  if (value == null || !Number.isFinite(value)) return '#999999'
+// NEW: individual-record map
 
-  const t = Math.min(1, Math.max(0, (value - min) / (max - min || 1)))
+function RecordLocationMap({ record }) {
+  if (!validLocation(record.location)) {
+    return (
+      <div className="notice">
+        GPS location unavailable for this record.
+      </div>
+    )
+  }
 
-  const red = [220, 55, 55]
-  const yellow = [240, 205, 45]
-  const green = [40, 150, 85]
+  const latitude = Number(
+    record.location.latitude
+  )
 
-  const start = t < 0.5 ? red : yellow
-  const end = t < 0.5 ? yellow : green
-  const p = t < 0.5 ? t * 2 : (t - 0.5) * 2
+  const longitude = Number(
+    record.location.longitude
+  )
 
-  return `rgb(${start.map((x, i) =>
-    Math.round(x + (end[i] - x) * p)
-  ).join(',')})`
+  const accuracy = Number(
+    record.location.accuracy
+  )
+
+  const markerCenter = [
+    latitude,
+    longitude,
+  ]
+
+  return (
+    <>
+      <div
+        className="map-container"
+        style={{ marginTop: 12 }}
+      >
+        <MapContainer
+          center={markerCenter}
+          zoom={18}
+          scrollWheelZoom={true}
+          className="leaflet-map"
+          style={{ height: 360 }}
+        >
+          <TileLayer
+            attribution="&copy; OpenStreetMap contributors"
+            url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+            maxZoom={19}
+          />
+
+          <Marker position={markerCenter}>
+            <Popup>
+              <strong>
+                {record.captureDate}
+              </strong>
+              <br />
+              Recording location
+              <br />
+              Hunter: {record.hunterId}
+            </Popup>
+          </Marker>
+
+          {Number.isFinite(accuracy) &&
+            accuracy > 0 && (
+              <Circle
+                center={markerCenter}
+                radius={accuracy}
+                pathOptions={{
+                  color: '#2563eb',
+                  fillColor: '#60a5fa',
+                  fillOpacity: 0.12,
+                  weight: 1,
+                }}
+              />
+            )}
+        </MapContainer>
+      </div>
+
+      <p className="muted">
+        Latitude: {latitude.toFixed(6)}
+        <br />
+        Longitude: {longitude.toFixed(6)}
+        <br />
+        Accuracy:{' '}
+        {Number.isFinite(accuracy)
+          ? `±${Math.round(accuracy)} m`
+          : 'Unknown'}
+        <br />
+        GPS timestamp:{' '}
+        {record.location.timestamp || 'Unknown'}
+      </p>
+
+      <p className="muted">
+        This map shows the recording location,
+        not necessarily the capture location.
+      </p>
+    </>
+  )
 }
 
 // ============================================================
-// File export
+// Export
 // ============================================================
 
 function csvCell(value) {
   let text = String(value ?? '')
-  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text
+
+  if (/^[=+\-@\t\r]/.test(text)) {
+    text = "'" + text
+  }
 
   return /[",\r\n]/.test(text)
     ? `"${text.replaceAll('"', '""')}"`
@@ -506,78 +982,148 @@ function csvCell(value) {
 }
 
 function download(filename, content, type) {
-  const blob = new Blob([content], { type })
+  const blob = new Blob(
+    [content],
+    { type }
+  )
+
   const url = URL.createObjectURL(blob)
+
   const link = document.createElement('a')
 
   link.href = url
   link.download = filename
+
   document.body.appendChild(link)
   link.click()
   link.remove()
 
-  setTimeout(() => URL.revokeObjectURL(url), 15000)
+  setTimeout(
+    () => URL.revokeObjectURL(url),
+    15000
+  )
 }
 
 // ============================================================
-// App
+// Main application
 // ============================================================
 
 export default function App() {
   const [page, setPage] = useState('home')
+
   const [records, setRecords] = useState([])
   const [dbReady, setDbReady] = useState(false)
+
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+
   const [form, setForm] = useState(blankForm)
 
   const [settings, setSettings] = useState(() => {
     try {
-      const data = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null')
+      const data = JSON.parse(
+        localStorage.getItem(SETTINGS_KEY) ||
+        'null'
+      )
 
       return {
         ...DEFAULT_SETTINGS,
         ...data,
-        masses: { ...DEFAULT_SETTINGS.masses, ...data?.masses },
-        rmax: { ...DEFAULT_SETTINGS.rmax, ...data?.rmax },
+
+        masses: {
+          ...DEFAULT_SETTINGS.masses,
+          ...data?.masses,
+        },
+
+        rmax: {
+          ...DEFAULT_SETTINGS.rmax,
+          ...data?.rmax,
+        },
       }
     } catch {
       return DEFAULT_SETTINGS
     }
   })
 
-  const [settingsUnlocked, setSettingsUnlocked] = useState(false)
+  const [
+    settingsUnlocked,
+    setSettingsUnlocked,
+  ] = useState(false)
+
   const [password, setPassword] = useState('')
-  const [methodFilter, setMethodFilter] = useState('All')
-  const [monthFilter, setMonthFilter] = useState('All')
-  const [mapIndicator, setMapIndicator] = useState('rb')
+
+  const [
+    methodFilter,
+    setMethodFilter,
+  ] = useState('All')
+
+  const [
+    monthFilter,
+    setMonthFilter,
+  ] = useState('All')
+
+  const [
+    mapIndicator,
+    setMapIndicator,
+  ] = useState('rb')
+
+  // NEW: selected history record
+
+  const [
+    selectedRecordId,
+    setSelectedRecordId,
+  ] = useState(null)
 
   const saveInProgress = useRef(false)
+
+  // ----------------------------------------------------------
+  // Read saved records
+  // ----------------------------------------------------------
 
   useEffect(() => {
     databaseAction('read')
       .then((data) => {
-        setRecords(sorted(data))
+        setRecords(
+          sortRecords(data)
+        )
+
         setDbReady(true)
       })
-      .catch((e) => setMessage('Database error: ' + e.message))
+
+      .catch((error) => {
+        setMessage(
+          'Database error: ' +
+          error.message
+        )
+      })
   }, [])
+
+  // Save settings
 
   useEffect(() => {
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+      localStorage.setItem(
+        SETTINGS_KEY,
+        JSON.stringify(settings)
+      )
     } catch {
-      // Settings storage can fail in restricted browsers.
+      // Storage may be unavailable in restricted browsers.
     }
   }, [settings])
 
-  function navigate(name) {
+  // ----------------------------------------------------------
+  // Navigation
+  // ----------------------------------------------------------
+
+  function navigate(target) {
     setMessage('')
-    if (name === 'settings') {
+
+    if (target === 'settings') {
       setSettingsUnlocked(false)
       setPassword('')
     }
-    setPage(name)
+
+    setPage(target)
   }
 
   function newRecord() {
@@ -586,19 +1132,28 @@ export default function App() {
   }
 
   function updateForm(patch) {
-    setForm((f) => ({ ...f, ...patch }))
+    setForm(
+      (previous) => ({
+        ...previous,
+        ...patch,
+      })
+    )
   }
 
   function changeCount(speciesId, method, delta) {
-    setForm((f) => ({
-      ...f,
+    setForm((previous) => ({
+      ...previous,
+
       byMethod: {
-        ...f.byMethod,
+        ...previous.byMethod,
+
         [method]: {
-          ...f.byMethod[method],
+          ...previous.byMethod[method],
+
           [speciesId]: Math.max(
             0,
-            f.byMethod[method][speciesId] + delta
+            previous.byMethod[method][speciesId] +
+              delta
           ),
         },
       },
@@ -606,23 +1161,35 @@ export default function App() {
   }
 
   // ----------------------------------------------------------
-  // Save: automatically acquire GPS
+  // Save record and automatically acquire GPS
   // ----------------------------------------------------------
 
   async function saveRecord() {
-    if (saveInProgress.current || !dbReady) return
+    if (
+      saveInProgress.current ||
+      !dbReady
+    ) {
+      return
+    }
 
     if (!settings.hunterId.trim()) {
-      setMessage('Please set Hunter ID in Settings.')
+      setMessage(
+        'Please set Hunter ID in Settings.'
+      )
       return
     }
 
     if (!validDate(form.captureDate)) {
-      setMessage('Invalid capture date.')
+      setMessage(
+        'Invalid capture date.'
+      )
       return
     }
 
-    for (const value of [form.gunEffort, form.snareEffort]) {
+    for (const value of [
+      form.gunEffort,
+      form.snareEffort,
+    ]) {
       if (
         value !== '' &&
         (
@@ -630,248 +1197,502 @@ export default function App() {
           Number(value) <= 0
         )
       ) {
-        setMessage('Hunting effort must be positive.')
+        setMessage(
+          'Hunting effort must be positive.'
+        )
         return
       }
     }
 
     saveInProgress.current = true
     setBusy(true)
-    setMessage('Acquiring GPS automatically...')
+
+    setMessage(
+      'Acquiring GPS automatically...'
+    )
+
+    const existing = records.find(
+      (record) => record.id === form.id
+    )
 
     let location = form.previousLocation
     let gpsError = null
 
     try {
       location = await getPosition()
-    } catch (e) {
-      gpsError = e.message
+    } catch (error) {
+      gpsError = error.message
     }
 
-    const old = records.find((r) => r.id === form.id)
-    const timestamp = new Date().toISOString()
+    const now = new Date().toISOString()
 
     const record = {
-      id: form.id || crypto.randomUUID(),
-      hunterId: old?.hunterId || settings.hunterId.trim(),
+      id:
+        form.id ||
+        crypto.randomUUID(),
+
+      hunterId:
+        existing?.hunterId ||
+        settings.hunterId.trim(),
+
       captureDate: form.captureDate,
       timePeriod: form.period,
 
-      byMethod: cleanByMethod(form.byMethod),
+      byMethod: cleanByMethod(
+        form.byMethod
+      ),
 
       gunEffort:
-        form.gunEffort === '' ? null : Number(form.gunEffort),
+        form.gunEffort === ''
+          ? null
+          : Number(form.gunEffort),
 
       snareEffort:
-        form.snareEffort === '' ? null : Number(form.snareEffort),
+        form.snareEffort === ''
+          ? null
+          : Number(form.snareEffort),
 
       note: form.note.trim(),
 
-      // GPS is the recording location, not necessarily
-      // the capture location.
       location: location || null,
       gpsError,
 
-      recordedAt: old?.recordedAt || timestamp,
-      updatedAt: timestamp,
+      recordedAt:
+        existing?.recordedAt || now,
+
+      updatedAt: now,
     }
 
     try {
-      await databaseAction('put', record)
+      await databaseAction(
+        'put',
+        record
+      )
 
-      const updated = await databaseAction('read')
-      setRecords(sorted(updated))
+      const updated = await databaseAction(
+        'read'
+      )
+
+      setRecords(
+        sortRecords(updated)
+      )
+
       setForm(blankForm())
       setPage('indicators')
 
       setMessage(
         location
-          ? `Record saved. GPS accuracy: ±${Math.round(location.accuracy)} m.`
-          : `Record saved without GPS. ${gpsError || ''}`
+          ? `Record saved. GPS accuracy: ±${Math.round(
+              Number(location.accuracy)
+            )} m.`
+          : `Record saved without GPS. ${
+              gpsError || ''
+            }`
       )
-    } catch (e) {
-      setMessage('Save failed: ' + e.message)
+    } catch (error) {
+      setMessage(
+        'Save failed: ' +
+        error.message
+      )
     } finally {
       setBusy(false)
       saveInProgress.current = false
     }
   }
 
+  // ----------------------------------------------------------
+  // Edit record
+  // ----------------------------------------------------------
+
   function editRecord(record) {
+    const previousMethod =
+      record.huntingMethod ||
+      record.method
+
+    const oldEffort =
+      record.effort == null
+        ? ''
+        : String(record.effort)
+
     setForm({
       id: record.id,
-      captureDate: record.captureDate,
-      period: record.timePeriod || record.period || 'Unknown',
-      byMethod: getByMethod(record),
-      gunEffort:
-        record.gunEffort == null ? '' : String(record.gunEffort),
-      snareEffort:
-        record.snareEffort == null ? '' : String(record.snareEffort),
-      note: record.note || '',
-      previousLocation: record.location || null,
-    })
 
-    // Restore legacy effort when possible.
-    if (record.gunEffort == null && record.snareEffort == null) {
-      const method = record.huntingMethod || record.method
-      const value = record.effort
-      if (value != null && value !== '') {
-        setForm((f) => ({
-          ...f,
-          gunEffort: method === 'Gun' ? String(value) : '',
-          snareEffort: method === 'Snare' ? String(value) : '',
-        }))
-      }
-    }
+      captureDate: record.captureDate,
+
+      period:
+        record.timePeriod ||
+        record.period ||
+        'Unknown',
+
+      byMethod: getByMethod(record),
+
+      gunEffort:
+        record.gunEffort != null
+          ? String(record.gunEffort)
+          : previousMethod === 'Gun'
+            ? oldEffort
+            : '',
+
+      snareEffort:
+        record.snareEffort != null
+          ? String(record.snareEffort)
+          : previousMethod === 'Snare'
+            ? oldEffort
+            : '',
+
+      note: record.note || '',
+
+      previousLocation:
+        record.location || null,
+    })
 
     navigate('record')
   }
 
+  // ----------------------------------------------------------
+  // Delete record
+  // ----------------------------------------------------------
+
   async function removeRecord(record) {
-    if (!window.confirm('Delete this record?')) return
+    if (
+      !window.confirm(
+        'Delete this record?'
+      )
+    ) {
+      return
+    }
 
     try {
-      await databaseAction('delete', record.id)
-      setRecords((r) => r.filter((x) => x.id !== record.id))
-      setMessage('Record deleted.')
-    } catch (e) {
-      setMessage('Delete failed: ' + e.message)
+      await databaseAction(
+        'delete',
+        record.id
+      )
+
+      setRecords(
+        (previous) =>
+          previous.filter(
+            (item) =>
+              item.id !== record.id
+          )
+      )
+
+      if (selectedRecordId === record.id) {
+        setSelectedRecordId(null)
+      }
+
+      setMessage(
+        'Record deleted.'
+      )
+    } catch (error) {
+      setMessage(
+        'Delete failed: ' +
+        error.message
+      )
     }
   }
 
   // ----------------------------------------------------------
-  // Aggregations
+  // NEW: Open record detail
   // ----------------------------------------------------------
 
-  const months = useMemo(() => [
-    ...new Set(
-      records.map((r) => r.captureDate?.slice(0, 7)).filter(Boolean)
-    ),
-  ].sort().reverse(), [records])
+  function openRecordDetail(record) {
+    setSelectedRecordId(record.id)
+    navigate('recordDetail')
+  }
 
-  const filteredRecords = useMemo(() =>
-    records.filter((r) => (
-      (monthFilter === 'All' ||
-        r.captureDate?.startsWith(monthFilter)) &&
-      (methodFilter === 'All' ||
-        countTotal(getByMethod(r)[methodFilter]) > 0 ||
-        (
-          methodFilter === 'Gun' &&
-          Number(r.gunEffort) > 0
-        ) ||
-        (
-          methodFilter === 'Snare' &&
-          Number(r.snareEffort) > 0
-        ))
-    )), [records, monthFilter, methodFilter]
+  const selectedRecord = records.find(
+    (record) =>
+      record.id === selectedRecordId
   )
 
-  const counts = useMemo(() => {
-    if (methodFilter === 'All') return totalsOf(filteredRecords)
-    return totalsByMethod(filteredRecords, methodFilter)
-  }, [filteredRecords, methodFilter])
+  // ----------------------------------------------------------
+  // Filters
+  // ----------------------------------------------------------
+
+  const months = useMemo(
+    () =>
+      [
+        ...new Set(
+          records
+            .map(
+              (record) =>
+                record.captureDate?.slice(0, 7)
+            )
+            .filter(Boolean)
+        ),
+      ].sort().reverse(),
+
+    [records]
+  )
+
+  const dateFilteredRecords = useMemo(
+    () =>
+      records.filter(
+        (record) =>
+          monthFilter === 'All' ||
+          record.captureDate?.startsWith(
+            monthFilter
+          )
+      ),
+
+    [records, monthFilter]
+  )
+
+  const filteredRecords = useMemo(
+    () =>
+      dateFilteredRecords.filter(
+        (record) => {
+          if (methodFilter === 'All') {
+            return true
+          }
+
+          const catches = countTotal(
+            getByMethod(record)[methodFilter]
+          )
+
+          if (catches > 0) {
+            return true
+          }
+
+          if (
+            methodFilter === 'Gun' &&
+            Number(record.gunEffort) > 0
+          ) {
+            return true
+          }
+
+          if (
+            methodFilter === 'Snare' &&
+            Number(record.snareEffort) > 0
+          ) {
+            return true
+          }
+
+          // Legacy effort format
+
+          const legacyMethod =
+            record.huntingMethod ||
+            record.method
+
+          return (
+            legacyMethod === methodFilter &&
+            Number(record.effort) > 0
+          )
+        }
+      ),
+
+    [dateFilteredRecords, methodFilter]
+  )
+
+  const counts = useMemo(
+    () =>
+      methodFilter === 'All'
+        ? totalsOf(filteredRecords)
+        : totalsByMethod(
+            filteredRecords,
+            methodFilter
+          ),
+
+    [filteredRecords, methodFilter]
+  )
 
   const indicators = useMemo(
-    () => calculateIndicators(counts, settings),
+    () =>
+      calculateIndicators(
+        counts,
+        settings
+      ),
+
     [counts, settings]
   )
 
-  const gpsRecords = useMemo(() =>
-    filteredRecords.filter((r) => {
-      if (!validLocation(r.location)) return false
-      const accuracy = Number(r.location.accuracy)
+  // ----------------------------------------------------------
+  // Map GPS filtering
+  // ----------------------------------------------------------
 
-      return (
-        Number.isFinite(accuracy) &&
-        accuracy >= 0 &&
-        accuracy <= settings.maxGpsAccuracy
-      )
-    }), [filteredRecords, settings.maxGpsAccuracy]
+  const gpsRecords = useMemo(
+    () =>
+      filteredRecords.filter(
+        (record) => {
+          if (
+            !validLocation(
+              record.location
+            )
+          ) {
+            return false
+          }
+
+          const accuracy = Number(
+            record.location.accuracy
+          )
+
+          return (
+            Number.isFinite(accuracy) &&
+            accuracy >= 0 &&
+            accuracy <=
+              Number(settings.maxGpsAccuracy)
+          )
+        }
+      ),
+
+    [
+      filteredRecords,
+      settings.maxGpsAccuracy,
+    ]
   )
 
-  const clusters = useMemo(() =>
-    clusterRecords(gpsRecords, settings.clusterDistance)
-      .map((cluster) => {
-        const c =
+  // ----------------------------------------------------------
+  // Map clustering
+  // ----------------------------------------------------------
+
+  const clusters = useMemo(
+    () =>
+      clusterRecords(
+        gpsRecords,
+        Number(settings.clusterDistance)
+      ).map((cluster) => {
+        const clusterCounts =
           methodFilter === 'All'
             ? totalsOf(cluster.records)
-            : totalsByMethod(cluster.records, methodFilter)
+            : totalsByMethod(
+                cluster.records,
+                methodFilter
+              )
 
         return {
           ...cluster,
-          counts: c,
+
+          counts: clusterCounts,
+
           metrics: {
-            ...calculateIndicators(c, settings),
-            gunCpue: cpue(cluster.records, 'Gun'),
-            snareCpue: cpue(cluster.records, 'Snare'),
+            ...calculateIndicators(
+              clusterCounts,
+              settings
+            ),
+
+            gunCpue: calculateCpue(
+              cluster.records,
+              'Gun'
+            ),
+
+            snareCpue: calculateCpue(
+              cluster.records,
+              'Snare'
+            ),
           },
         }
       }),
-    [gpsRecords, settings, methodFilter]
+
+    [
+      gpsRecords,
+      settings,
+      methodFilter,
+    ]
   )
 
-  const mapRange = useMemo(() => {
-    if (mapIndicator === 'rb') {
-      return {
-        min: Number(settings.colorMin),
-        max: Number(settings.colorMax),
-      }
-    }
+  // NEW: fixed scales for four indicators
 
-    const values = clusters
-      .map((c) => c.metrics[mapIndicator])
-      .filter((x) => x != null && Number.isFinite(x))
+  const mapScale = useMemo(
+    () =>
+      getMapScale(
+        mapIndicator,
+        clusters
+      ),
 
-    if (!values.length) return { min: 0, max: 1 }
-
-    const min = Math.min(...values)
-    const max = Math.max(...values)
-
-    return { min, max: max > min ? max : min + 1 }
-  }, [clusters, mapIndicator, settings.colorMin, settings.colorMax])
+    [mapIndicator, clusters]
+  )
 
   // ----------------------------------------------------------
-  // Export
+  // Export CSV
   // ----------------------------------------------------------
 
   function exportCsv() {
     const headers = [
-      'record_id', 'hunter_id', 'capture_date', 'time_period',
-      ...METHODS.flatMap((m) =>
-        IDS.map((id) => `${m.toLowerCase()}_${id}`)
+      'record_id',
+      'hunter_id',
+      'capture_date',
+      'time_period',
+
+      ...METHODS.flatMap(
+        (method) =>
+          IDS.map(
+            (id) =>
+              `${method.toLowerCase()}_${id}`
+          )
       ),
+
       'gun_effort_hunter_days',
       'snare_effort_trap_nights',
-      'latitude', 'longitude', 'gps_accuracy_m',
-      'gps_timestamp', 'recorded_at', 'updated_at', 'note',
+
+      'latitude',
+      'longitude',
+      'gps_accuracy_m',
+      'gps_timestamp',
+
+      'recorded_at',
+      'updated_at',
+      'note',
     ]
 
-    const rows = records.map((r) => {
-      const matrix = getByMethod(r)
+    const rows = records.map(
+      (record) => {
+        const matrix =
+          getByMethod(record)
 
-      return [
-        r.id,
-        r.hunterId,
-        r.captureDate,
-        r.timePeriod || r.period,
-        ...METHODS.flatMap((m) =>
-          IDS.map((id) => matrix[m][id])
-        ),
-        r.gunEffort ?? '',
-        r.snareEffort ?? '',
-        r.location?.latitude ?? '',
-        r.location?.longitude ?? '',
-        r.location?.accuracy ?? '',
-        r.location?.timestamp ?? '',
-        r.recordedAt,
-        r.updatedAt,
-        r.note,
-      ]
-    })
+        const oldMethod =
+          record.huntingMethod ||
+          record.method
 
-    const csv = '\ufeff' +
+        const oldEffort = record.effort
+
+        return [
+          record.id,
+          record.hunterId,
+          record.captureDate,
+          record.timePeriod ||
+            record.period,
+
+          ...METHODS.flatMap(
+            (method) =>
+              IDS.map(
+                (id) =>
+                  matrix[method][id]
+              )
+          ),
+
+          record.gunEffort ??
+            (
+              oldMethod === 'Gun'
+                ? oldEffort
+                : ''
+            ),
+
+          record.snareEffort ??
+            (
+              oldMethod === 'Snare'
+                ? oldEffort
+                : ''
+            ),
+
+          record.location?.latitude ?? '',
+          record.location?.longitude ?? '',
+          record.location?.accuracy ?? '',
+          record.location?.timestamp ?? '',
+
+          record.recordedAt,
+          record.updatedAt,
+          record.note,
+        ]
+      }
+    )
+
+    const csv =
+      '\ufeff' +
       [headers, ...rows]
-        .map((row) => row.map(csvCell).join(','))
+        .map(
+          (row) =>
+            row.map(csvCell).join(',')
+        )
         .join('\r\n')
 
     download(
@@ -881,513 +1702,1150 @@ export default function App() {
     )
   }
 
+  // ----------------------------------------------------------
+  // JSON backup
+  // ----------------------------------------------------------
+
   function exportJson() {
     download(
       `wis-backup-${today()}.json`,
-      JSON.stringify({
-        version: 3,
-        app: 'WIs App',
-        exportedAt: new Date().toISOString(),
-        records,
-      }, null, 2),
+
+      JSON.stringify(
+        {
+          version: 3,
+          app: 'WIs App',
+
+          exportedAt:
+            new Date().toISOString(),
+
+          records,
+        },
+
+        null,
+        2
+      ),
+
       'application/json'
     )
   }
 
   async function importJson(event) {
     const file = event.target.files?.[0]
+
     if (!file) return
 
     try {
-      const data = JSON.parse(await file.text())
+      const data = JSON.parse(
+        await file.text()
+      )
 
-      if (!Array.isArray(data.records)) {
-        throw new Error('Invalid backup')
+      if (
+        !Array.isArray(data.records)
+      ) {
+        throw new Error(
+          'Invalid backup'
+        )
       }
 
-      for (const r of data.records) {
+      for (const record of data.records) {
         if (
-          typeof r.id !== 'string' ||
-          !r.id ||
-          typeof r.hunterId !== 'string' ||
-          !validDate(r.captureDate) ||
-          !(
-            r.byMethod ||
-            r.counts
-          )
+          typeof record.id !== 'string' ||
+          !record.id ||
+          typeof record.hunterId !== 'string' ||
+          !validDate(record.captureDate) ||
+          !(record.byMethod || record.counts)
         ) {
-          throw new Error('Invalid record in backup')
+          throw new Error(
+            'Invalid record in backup'
+          )
         }
 
-        const matrix = getByMethod(r)
-        for (const method of METHODS) {
-          for (const id of IDS) {
-            const n = Number(matrix[method][id])
-            if (!Number.isInteger(n) || n < 0) {
-              throw new Error('Invalid count')
-            }
-          }
+        if (
+          record.location &&
+          !validLocation(record.location)
+        ) {
+          throw new Error(
+            'Invalid GPS coordinates'
+          )
         }
       }
 
-      if (!window.confirm(
-        `Import ${data.records.length} records? Existing IDs will be replaced.`
-      )) return
+      if (
+        !window.confirm(
+          `Import ${data.records.length} records? ` +
+          'Existing IDs will be replaced.'
+        )
+      ) {
+        return
+      }
 
       setBusy(true)
-      await databaseAction('putMany', data.records)
-      setRecords(sorted(await databaseAction('read')))
-      setMessage('Records imported successfully.')
-    } catch (e) {
-      setMessage('Import failed: ' + e.message)
+
+      await databaseAction(
+        'putMany',
+        data.records
+      )
+
+      const updated =
+        await databaseAction('read')
+
+      setRecords(
+        sortRecords(updated)
+      )
+
+      setMessage(
+        'Records imported successfully.'
+      )
+    } catch (error) {
+      setMessage(
+        'Import failed: ' +
+        error.message
+      )
     } finally {
       setBusy(false)
       event.target.value = ''
     }
   }
 
-  const totalAnimals = countTotal(totalsOf(records))
-  const formTotal = METHODS.reduce(
-    (sum, m) => sum + countTotal(form.byMethod[m]),
-    0
+  // ----------------------------------------------------------
+  // Totals
+  // ----------------------------------------------------------
+
+  const totalAnimals = countTotal(
+    totalsOf(records)
   )
 
+  const formTotal =
+    METHODS.reduce(
+      (sum, method) =>
+        sum +
+        countTotal(
+          form.byMethod[method]
+        ),
+      0
+    )
+
   // ==========================================================
-  // Rendering
+  // UI
   // ==========================================================
 
   return (
     <div className="app">
+
+      {/* HEADER */}
+
       <header className="app-header">
         <h1>WIs App</h1>
         <p>Wildlife Indicators Monitoring</p>
       </header>
 
       <main className="app-main">
+
         {page !== 'home' && (
-          <button className="back-button" onClick={() => navigate('home')}>
-            ← Home
+          <button
+            className="back-button"
+            onClick={() => {
+              if (page === 'recordDetail') {
+                navigate('history')
+              } else {
+                navigate('home')
+              }
+            }}
+          >
+            {page === 'recordDetail'
+              ? '← History'
+              : '← Home'}
           </button>
         )}
 
         {message && (
-          <div className="notice" role="status">{message}</div>
+          <div
+            className="notice"
+            role="status"
+          >
+            {message}
+          </div>
         )}
 
-        {/* HOME */}
+        {/* ================================================
+            HOME
+        ================================================ */}
+
         {page === 'home' && (
           <>
             <section className="card">
               <h2>Hunting Monitoring</h2>
-              <p>Record catches and monitor wildlife indicators.</p>
+
+              <p>
+                Record catches and monitor
+                wildlife indicators.
+              </p>
 
               <div className="summary-grid">
-                <div><strong>{records.length}</strong><span>Records</span></div>
-                <div><strong>{totalAnimals}</strong><span>Animals</span></div>
+                <div>
+                  <strong>
+                    {records.length}
+                  </strong>
+
+                  <span>Records</span>
+                </div>
+
+                <div>
+                  <strong>
+                    {totalAnimals}
+                  </strong>
+
+                  <span>Animals</span>
+                </div>
               </div>
             </section>
 
             <div className="home-menu">
               {[
-                ['record', '🐾', 'New Record', 'Record animal catches'],
-                ['indicators', '📊', 'Indicators', 'Wildlife indicators and CPUE'],
-                ['history', '📋', 'History', 'Review recorded catches'],
-                ['map', '🗺️', 'Map', 'GPS-based indicator map'],
-                ['export', '📁', 'Export / Backup', 'CSV and JSON'],
-                ['settings', '⚙️', 'Settings', 'Password protected'],
-              ].map(([id, icon, label, description]) => (
-                <button
-                  key={id}
-                  onClick={() =>
-                    id === 'record' ? newRecord() : navigate(id)
-                  }
-                >
-                  <span>{icon}</span>
-                  <div>
-                    <strong>{label}</strong>
-                    <small>{description}</small>
-                  </div>
-                </button>
-              ))}
+                [
+                  'record',
+                  '🐾',
+                  'New Record',
+                  'Record animal catches',
+                ],
+
+                [
+                  'indicators',
+                  '📊',
+                  'Indicators',
+                  'Wildlife indicators and CPUE',
+                ],
+
+                [
+                  'history',
+                  '📋',
+                  'History',
+                  'Review recorded catches',
+                ],
+
+                [
+                  'map',
+                  '🗺️',
+                  'Map',
+                  'GPS-based indicator map',
+                ],
+
+                [
+                  'export',
+                  '📁',
+                  'Export / Backup',
+                  'CSV and JSON',
+                ],
+
+                [
+                  'settings',
+                  '⚙️',
+                  'Settings',
+                  'Password protected',
+                ],
+              ].map(
+                ([
+                  id,
+                  icon,
+                  label,
+                  description,
+                ]) => (
+                  <button
+                    key={id}
+                    onClick={() =>
+                      id === 'record'
+                        ? newRecord()
+                        : navigate(id)
+                    }
+                  >
+                    <span>{icon}</span>
+
+                    <div>
+                      <strong>
+                        {label}
+                      </strong>
+
+                      <small>
+                        {description}
+                      </small>
+                    </div>
+                  </button>
+                )
+              )}
             </div>
           </>
         )}
 
-        {/* RECORD */}
+        {/* ================================================
+            NEW RECORD
+        ================================================ */}
+
         {page === 'record' && (
           <section className="card">
-            <h2>{form.id ? 'Edit Record' : 'New Hunting Record'}</h2>
+            <h2>
+              {form.id
+                ? 'Edit Record'
+                : 'New Hunting Record'}
+            </h2>
 
             <h3>Capture date</h3>
+
             <div className="choice-buttons">
-              {[0, 1, 2].map((offset) => (
-                <button
-                  key={offset}
-                  className={
-                    form.captureDate === today(offset) ? 'selected' : ''
-                  }
-                  onClick={() =>
-                    updateForm({ captureDate: today(offset) })
-                  }
-                >
-                  {['Today', 'Yesterday', 'Two days ago'][offset]}
-                </button>
-              ))}
+              {[0, 1, 2].map(
+                (offset) => (
+                  <button
+                    key={offset}
+                    className={
+                      form.captureDate === today(offset)
+                        ? 'selected'
+                        : ''
+                    }
+                    onClick={() =>
+                      updateForm({
+                        captureDate:
+                          today(offset),
+                      })
+                    }
+                  >
+                    {
+                      [
+                        'Today',
+                        'Yesterday',
+                        'Two days ago',
+                      ][offset]
+                    }
+                  </button>
+                )
+              )}
             </div>
 
             <input
               type="date"
               max={today()}
               value={form.captureDate}
-              onChange={(e) =>
-                updateForm({ captureDate: e.target.value })
+              onChange={(event) =>
+                updateForm({
+                  captureDate:
+                    event.target.value,
+                })
               }
             />
 
             <h3>Time of capture</h3>
+
             <div className="choice-buttons">
-              {PERIODS.map((period) => (
-                <button
-                  key={period}
-                  className={form.period === period ? 'selected' : ''}
-                  onClick={() => updateForm({ period })}
-                >
-                  {period}
-                </button>
-              ))}
+              {PERIODS.map(
+                (period) => (
+                  <button
+                    key={period}
+                    className={
+                      form.period === period
+                        ? 'selected'
+                        : ''
+                    }
+                    onClick={() =>
+                      updateForm({
+                        period,
+                      })
+                    }
+                  >
+                    {period}
+                  </button>
+                )
+              )}
             </div>
 
             <h3>Animals caught</h3>
+
             <p className="muted">
-              Enter the number caught by each hunting method.
+              Enter the number caught
+              by each hunting method.
             </p>
 
             <div className="animal-list">
-              {SPECIES.map((species) => (
-                <div className="animal-row" key={species.id}>
-                  <div className="animal-name">
-                    <span>{species.icon}</span>
-                    <strong>{species.name}</strong>
-                  </div>
+              {SPECIES.map(
+                (species) => (
+                  <div
+                    className="animal-row"
+                    key={species.id}
+                  >
+                    <div className="animal-name">
+                      <span>
+                        {species.icon}
+                      </span>
 
-                  <div className="method-grid">
-                    {METHODS.map((method) => (
-                      <div className="method-count" key={method}>
-                        <span className="method-label">{method}</span>
+                      <strong>
+                        {species.name}
+                      </strong>
+                    </div>
 
-                        <div className="counter">
-                          <button
-                            type="button"
-                            aria-label={`Decrease ${species.name} ${method}`}
-                            onClick={() =>
-                              changeCount(species.id, method, -1)
-                            }
+                    <div className="method-grid">
+                      {METHODS.map(
+                        (method) => (
+                          <div
+                            className="method-count"
+                            key={method}
                           >
-                            −
-                          </button>
+                            <span className="method-label">
+                              {method}
+                            </span>
 
-                          <strong>
-                            {form.byMethod[method][species.id]}
-                          </strong>
+                            <div className="counter">
+                              <button
+                                type="button"
+                                aria-label={
+                                  `Decrease ${species.name} ${method}`
+                                }
+                                onClick={() =>
+                                  changeCount(
+                                    species.id,
+                                    method,
+                                    -1
+                                  )
+                                }
+                              >
+                                −
+                              </button>
 
-                          <button
-                            type="button"
-                            aria-label={`Increase ${species.name} ${method}`}
-                            onClick={() =>
-                              changeCount(species.id, method, 1)
-                            }
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                              <strong>
+                                {
+                                  form.byMethod[method][
+                                    species.id
+                                  ]
+                                }
+                              </strong>
+
+                              <button
+                                type="button"
+                                aria-label={
+                                  `Increase ${species.name} ${method}`
+                                }
+                                onClick={() =>
+                                  changeCount(
+                                    species.id,
+                                    method,
+                                    1
+                                  )
+                                }
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              )}
             </div>
 
             <p className="total-line">
-              Total animals: <strong>{formTotal}</strong>
+              Total animals:{' '}
+              <strong>
+                {formTotal}
+              </strong>
             </p>
 
-            <h3>Hunting effort (optional)</h3>
+            <h3>
+              Hunting effort (optional)
+            </h3>
 
-            <label className="field-label">Gun: hunter-days</label>
+            <label className="field-label">
+              Gun: hunter-days
+            </label>
+
             <input
               type="number"
               min="0"
               step="any"
               inputMode="decimal"
               value={form.gunEffort}
-              onChange={(e) =>
-                updateForm({ gunEffort: e.target.value })
+              onChange={(event) =>
+                updateForm({
+                  gunEffort:
+                    event.target.value,
+                })
               }
               placeholder="Hunter-days"
             />
 
-            <label className="field-label">Snare: trap-nights</label>
+            <label className="field-label">
+              Snare: trap-nights
+            </label>
+
             <input
               type="number"
               min="0"
               step="any"
               inputMode="decimal"
               value={form.snareEffort}
-              onChange={(e) =>
-                updateForm({ snareEffort: e.target.value })
+              onChange={(event) =>
+                updateForm({
+                  snareEffort:
+                    event.target.value,
+                })
               }
               placeholder="Trap-nights"
             />
 
             <p className="muted">
-              Zero-catch records are allowed. Effort is required
-              only when calculating CPUE.
+              Zero-catch records are allowed.
+              Effort is needed for CPUE.
             </p>
 
             <h3>Notes (optional)</h3>
+
             <textarea
               rows="2"
               value={form.note}
-              onChange={(e) =>
-                updateForm({ note: e.target.value })
+              onChange={(event) =>
+                updateForm({
+                  note:
+                    event.target.value,
+                })
               }
             />
 
             <p className="gps-hint">
-              ◎ GPS location will be acquired automatically
-              when you save the record.
+              ◎ GPS location will be
+              acquired automatically when
+              you save the record.
             </p>
 
             <button
               className="primary-button"
-              disabled={busy || !dbReady}
+              disabled={
+                busy || !dbReady
+              }
               onClick={saveRecord}
             >
-              {busy ? 'Acquiring GPS / Saving...' : 'Save Record'}
+              {busy
+                ? 'Acquiring GPS / Saving...'
+                : 'Save Record'}
             </button>
           </section>
         )}
 
-        {/* INDICATORS */}
+        {/* ================================================
+            INDICATORS
+        ================================================ */}
+
         {page === 'indicators' && (
           <section className="card">
             <h2>Wildlife Indicators</h2>
 
             <h3>Hunting method</h3>
+
             <select
               value={methodFilter}
-              onChange={(e) => setMethodFilter(e.target.value)}
+              onChange={(event) =>
+                setMethodFilter(
+                  event.target.value
+                )
+              }
             >
-              <option value="All">All methods</option>
-              {METHODS.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
+              <option value="All">
+                All methods
+              </option>
+
+              {METHODS.map(
+                (method) => (
+                  <option
+                    key={method}
+                    value={method}
+                  >
+                    {method}
+                  </option>
+                )
+              )}
             </select>
 
             <h3>Month</h3>
+
             <select
               value={monthFilter}
-              onChange={(e) => setMonthFilter(e.target.value)}
+              onChange={(event) =>
+                setMonthFilter(
+                  event.target.value
+                )
+              }
             >
-              <option value="All">All months</option>
-              {months.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
+              <option value="All">
+                All months
+              </option>
+
+              {months.map(
+                (month) => (
+                  <option
+                    key={month}
+                    value={month}
+                  >
+                    {month}
+                  </option>
+                )
+              )}
             </select>
 
             <div className="summary-grid">
               <div>
-                <strong>{filteredRecords.length}</strong>
+                <strong>
+                  {filteredRecords.length}
+                </strong>
+
                 <span>Records</span>
               </div>
+
               <div>
-                <strong>{indicators.total}</strong>
+                <strong>
+                  {indicators.total}
+                </strong>
+
                 <span>Animals</span>
               </div>
             </div>
 
             <div className="indicator-grid">
-              {INDICATORS.slice(0, 6).map(([id, label]) => (
-                <div className="indicator-card" key={id}>
-                  <span>{label}</span>
-                  <strong>{fmt(indicators[id])}</strong>
-                </div>
-              ))}
+              {INDICATORS.slice(0, 6).map(
+                ([id, label]) => (
+                  <div
+                    className="indicator-card"
+                    key={id}
+                  >
+                    <span>
+                      {label}
+                    </span>
+
+                    <strong>
+                      {fmt(
+                        indicators[id]
+                      )}
+                    </strong>
+                  </div>
+                )
+              )}
 
               <div className="indicator-card">
-                <span>Gun CPUE (animals / hunter-day)</span>
-                <strong>{fmt(cpue(filteredRecords, 'Gun'))}</strong>
+                <span>
+                  Gun CPUE
+                  (animals / hunter-day)
+                </span>
+
+                <strong>
+                  {fmt(
+                    calculateCpue(
+                      filteredRecords,
+                      'Gun'
+                    )
+                  )}
+                </strong>
               </div>
 
               <div className="indicator-card">
-                <span>Snare CPUE (animals / trap-night)</span>
-                <strong>{fmt(cpue(filteredRecords, 'Snare'))}</strong>
+                <span>
+                  Snare CPUE
+                  (animals / trap-night)
+                </span>
+
+                <strong>
+                  {fmt(
+                    calculateCpue(
+                      filteredRecords,
+                      'Snare'
+                    )
+                  )}
+                </strong>
               </div>
             </div>
 
             <h3>Species totals</h3>
-            {SPECIES.map((s) => (
-              <div className="species-total" key={s.id}>
-                <span>{s.name}</span>
-                <strong>{counts[s.id]}</strong>
-              </div>
-            ))}
+
+            {SPECIES.map(
+              (species) => (
+                <div
+                  className="species-total"
+                  key={species.id}
+                >
+                  <span>
+                    {species.name}
+                  </span>
+
+                  <strong>
+                    {
+                      counts[
+                        species.id
+                      ]
+                    }
+                  </strong>
+                </div>
+              )
+            )}
 
             <p className="muted">
-              Indicators are calculated from hunting records,
+              Indicators are calculated
+              from hunting records,
               not camera-trap detection rates.
             </p>
           </section>
         )}
 
-        {/* HISTORY */}
+        {/* ================================================
+            HISTORY — CHRONOLOGICAL ORDER
+        ================================================ */}
+
         {page === 'history' && (
           <section className="card">
             <h2>History</h2>
-            <p>{records.length} records</p>
 
-            {records.map((r) => (
-              <div className="history-record" key={r.id}>
-                <strong>
-                  {r.captureDate} · {r.timePeriod || r.period}
-                </strong>
+            <p className="muted">
+              Records are sorted by capture
+              date, newest first.
+            </p>
 
-                <p>Hunter: {r.hunterId}</p>
+            <p>
+              {records.length} records
+            </p>
 
-                {SPECIES.map((s) =>
-                  METHODS.map((m) => {
-                    const n = getByMethod(r)[m][s.id]
-                    return n > 0 ? (
-                      <p key={`${s.id}-${m}`}>
-                        {s.name} · {m}: {n}
+            {records.length === 0 && (
+              <p>No records yet.</p>
+            )}
+
+            {records.map(
+              (record) => {
+                const matrix =
+                  getByMethod(record)
+
+                const total =
+                  METHODS.reduce(
+                    (sum, method) =>
+                      sum +
+                      countTotal(
+                        matrix[method]
+                      ),
+                    0
+                  )
+
+                return (
+                  <div
+                    className="history-record"
+                    key={record.id}
+                  >
+                    <strong>
+                      {record.captureDate}
+                      {' · '}
+                      {
+                        record.timePeriod ||
+                        record.period
+                      }
+                    </strong>
+
+                    <p>
+                      Hunter:{' '}
+                      {record.hunterId}
+                    </p>
+
+                    <p>
+                      Animals: {total}
+                    </p>
+
+                    {SPECIES.map(
+                      (species) =>
+                        METHODS.map(
+                          (method) => {
+                            const number =
+                              matrix[method][
+                                species.id
+                              ]
+
+                            return number > 0 ? (
+                              <p
+                                key={
+                                  `${species.id}-${method}`
+                                }
+                              >
+                                {species.name}
+                                {' · '}
+                                {method}
+                                {': '}
+                                {number}
+                              </p>
+                            ) : null
+                          }
+                        )
+                    )}
+
+                    {validLocation(
+                      record.location
+                    ) ? (
+                      <p className="muted">
+                        GPS recorded
                       </p>
-                    ) : null
-                  })
-                )}
+                    ) : (
+                      <p className="muted">
+                        No GPS recorded
+                      </p>
+                    )}
 
-                {r.location ? (
-                  <p className="muted">
-                    GPS accuracy: ±{Math.round(r.location.accuracy)} m
-                  </p>
-                ) : (
-                  <p className="muted">No GPS recorded</p>
-                )}
+                    <div className="history-actions">
+                      <button
+                        className="secondary-button"
+                        onClick={() =>
+                          openRecordDetail(
+                            record
+                          )
+                        }
+                      >
+                        View Location
+                      </button>
 
-                <div className="history-actions">
-                  <button
-                    className="secondary-button"
-                    onClick={() => editRecord(r)}
-                  >
-                    Edit
-                  </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() =>
+                          editRecord(
+                            record
+                          )
+                        }
+                      >
+                        Edit
+                      </button>
 
-                  <button
-                    className="delete-button"
-                    onClick={() => removeRecord(r)}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))}
+                      <button
+                        className="delete-button"
+                        onClick={() =>
+                          removeRecord(
+                            record
+                          )
+                        }
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                )
+              }
+            )}
           </section>
         )}
 
-        {/* MAP */}
+        {/* ================================================
+            NEW: RECORD DETAIL + MAP
+        ================================================ */}
+
+        {page === 'recordDetail' && (
+          <section className="card">
+            <h2>Record Details</h2>
+
+            {!selectedRecord ? (
+              <p>
+                Record not found.
+              </p>
+            ) : (
+              <>
+                <h3>
+                  {
+                    selectedRecord.captureDate
+                  }
+                </h3>
+
+                <p>
+                  Time:{' '}
+                  {
+                    selectedRecord.timePeriod ||
+                    selectedRecord.period
+                  }
+                </p>
+
+                <p>
+                  Hunter:{' '}
+                  {
+                    selectedRecord.hunterId
+                  }
+                </p>
+
+                <h3>
+                  Animals caught
+                </h3>
+
+                {SPECIES.map(
+                  (species) =>
+                    METHODS.map(
+                      (method) => {
+                        const number =
+                          getByMethod(
+                            selectedRecord
+                          )[method][species.id]
+
+                        return number > 0 ? (
+                          <div
+                            className="species-total"
+                            key={
+                              `${species.id}-${method}`
+                            }
+                          >
+                            <span>
+                              {species.name}
+                              {' · '}
+                              {method}
+                            </span>
+
+                            <strong>
+                              {number}
+                            </strong>
+                          </div>
+                        ) : null
+                      }
+                    )
+                )}
+
+                {selectedRecord.note && (
+                  <>
+                    <h3>Notes</h3>
+
+                    <p>
+                      {
+                        selectedRecord.note
+                      }
+                    </p>
+                  </>
+                )}
+
+                <h3>
+                  Recording Location
+                </h3>
+
+                <RecordLocationMap
+                  record={selectedRecord}
+                />
+
+                <button
+                  className="secondary-button"
+                  onClick={() =>
+                    editRecord(
+                      selectedRecord
+                    )
+                  }
+                >
+                  Edit Record
+                </button>
+              </>
+            )}
+          </section>
+        )}
+
+        {/* ================================================
+            MAP
+        ================================================ */}
+
         {page === 'map' && (
           <section className="card map-card">
-            <h2>Wildlife Indicators Map</h2>
+            <h2>
+              Wildlife Indicators Map
+            </h2>
 
             <h3>Indicator</h3>
+
             <select
               value={mapIndicator}
-              onChange={(e) => setMapIndicator(e.target.value)}
+              onChange={(event) =>
+                setMapIndicator(
+                  event.target.value
+                )
+              }
             >
-              {INDICATORS.map(([id, label]) => (
-                <option key={id} value={id}>{label}</option>
-              ))}
+              {INDICATORS.map(
+                ([id, label]) => (
+                  <option
+                    key={id}
+                    value={id}
+                  >
+                    {label}
+                  </option>
+                )
+              )}
             </select>
 
             <h3>Hunting method</h3>
+
             <select
               value={methodFilter}
-              onChange={(e) => setMethodFilter(e.target.value)}
+              onChange={(event) =>
+                setMethodFilter(
+                  event.target.value
+                )
+              }
             >
-              <option value="All">All methods</option>
-              {METHODS.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
+              <option value="All">
+                All methods
+              </option>
+
+              {METHODS.map(
+                (method) => (
+                  <option
+                    key={method}
+                    value={method}
+                  >
+                    {method}
+                  </option>
+                )
+              )}
             </select>
 
             <h3>Month</h3>
+
             <select
               value={monthFilter}
-              onChange={(e) => setMonthFilter(e.target.value)}
+              onChange={(event) =>
+                setMonthFilter(
+                  event.target.value
+                )
+              }
             >
-              <option value="All">All months</option>
-              {months.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
+              <option value="All">
+                All months
+              </option>
+
+              {months.map(
+                (month) => (
+                  <option
+                    key={month}
+                    value={month}
+                  >
+                    {month}
+                  </option>
+                )
+              )}
             </select>
 
             <div className="map-settings-row">
               <label>
                 Cluster distance (m)
+
                 <select
-                  value={settings.clusterDistance}
-                  onChange={(e) =>
-                    setSettings((s) => ({
-                      ...s,
-                      clusterDistance: Number(e.target.value),
-                    }))
+                  value={
+                    settings.clusterDistance
+                  }
+                  onChange={(event) =>
+                    setSettings(
+                      (previous) => ({
+                        ...previous,
+
+                        clusterDistance:
+                          Number(
+                            event.target.value
+                          ),
+                      })
+                    )
                   }
                 >
-                  {[10, 20, 30, 50, 100].map((n) => (
-                    <option key={n} value={n}>{n} m</option>
-                  ))}
+                  {[10, 20, 30, 50, 100].map(
+                    (value) => (
+                      <option
+                        key={value}
+                        value={value}
+                      >
+                        {value} m
+                      </option>
+                    )
+                  )}
                 </select>
               </label>
 
               <label>
                 Circle radius (m)
+
                 <select
-                  value={settings.circleRadius}
-                  onChange={(e) =>
-                    setSettings((s) => ({
-                      ...s,
-                      circleRadius: Number(e.target.value),
-                    }))
+                  value={
+                    settings.circleRadius
+                  }
+                  onChange={(event) =>
+                    setSettings(
+                      (previous) => ({
+                        ...previous,
+
+                        circleRadius:
+                          Number(
+                            event.target.value
+                          ),
+                      })
+                    )
                   }
                 >
-                  {[10, 20, 30, 50, 100].map((n) => (
-                    <option key={n} value={n}>{n} m</option>
-                  ))}
+                  {[10, 20, 30, 50, 100].map(
+                    (value) => (
+                      <option
+                        key={value}
+                        value={value}
+                      >
+                        {value} m
+                      </option>
+                    )
+                  )}
                 </select>
               </label>
             </div>
 
+            {/* Color legend */}
+
             <div className="map-legend">
               <div className="legend-gradient" />
+
               <div className="legend-labels">
-                <span>{fmt(mapRange.min, 2)}</span>
-                <span>{fmt((mapRange.min + mapRange.max) / 2, 2)}</span>
-                <span>{fmt(mapRange.max, 2)}</span>
+                <span>
+                  {fmt(
+                    mapScale.min,
+                    2
+                  )}
+                </span>
+
+                <span>
+                  {fmt(
+                    mapScale.middle,
+                    2
+                  )}
+                </span>
+
+                <span>
+                  {fmt(
+                    mapScale.max,
+                    2
+                  )}
+                </span>
               </div>
             </div>
 
+            <p className="muted">
+              {FIXED_SCALES[mapIndicator]
+                ? 'Fixed color scale: red = lower, yellow = middle, green = higher.'
+                : 'Relative color scale based on the observed values.'}
+            </p>
+
             <div className="map-summary">
-              <span>GPS records: {gpsRecords.length}</span>
-              <span>Clusters: {clusters.length}</span>
               <span>
-                Excluded: {filteredRecords.length - gpsRecords.length}
+                GPS records:{' '}
+                {gpsRecords.length}
+              </span>
+
+              <span>
+                Clusters:{' '}
+                {clusters.length}
+              </span>
+
+              <span>
+                Excluded:{' '}
+                {
+                  filteredRecords.length -
+                  gpsRecords.length
+                }
               </span>
             </div>
+
+            {/* OpenStreetMap */}
 
             <div className="map-container">
               <MapContainer
                 center={[2.5, 15.0]}
                 zoom={9}
-                scrollWheelZoom
+                scrollWheelZoom={true}
                 className="leaflet-map"
               >
                 <TileLayer
@@ -1396,80 +2854,157 @@ export default function App() {
                   maxZoom={19}
                 />
 
-                <FitBounds clusters={clusters} />
+                <FitBounds
+                  clusters={clusters}
+                />
 
-                {clusters.map((c) => {
-                  const value = c.metrics[mapIndicator]
-                  const fill = color(
-                    value,
-                    mapRange.min,
-                    mapRange.max
-                  )
+                {clusters.map(
+                  (cluster) => {
+                    const value =
+                      cluster.metrics[
+                        mapIndicator
+                      ]
 
-                  return (
-                    <Circle
-                      key={c.id}
-                      center={[c.latitude, c.longitude]}
-                      radius={settings.circleRadius}
-                      pathOptions={{
-                        color: fill,
-                        fillColor: fill,
-                        fillOpacity: 0.75,
-                        weight: 2,
-                      }}
-                    >
-                      <Popup>
-                        <div className="map-popup">
-                          <h3>Cluster {c.id}</h3>
-                          <p>Records: {c.records.length}</p>
-                          <p>Animals: {c.metrics.total}</p>
-                          <p>GPS: {c.latitude.toFixed(6)}, {c.longitude.toFixed(6)}</p>
-                          <hr />
+                    const fill =
+                      getColor(
+                        value,
+                        mapScale.min,
+                        mapScale.max
+                      )
 
-                          {INDICATORS.map(([id, label]) => (
-                            <p key={id}>
-                              <strong>{label}: </strong>
-                              {fmt(c.metrics[id])}
+                    return (
+                      <Circle
+                        key={cluster.id}
+                        center={[
+                          cluster.latitude,
+                          cluster.longitude,
+                        ]}
+                        radius={
+                          Number(
+                            settings.circleRadius
+                          )
+                        }
+                        pathOptions={{
+                          color: fill,
+                          fillColor: fill,
+                          fillOpacity: 0.75,
+                          weight: 2,
+                        }}
+                      >
+                        <Popup>
+                          <div className="map-popup">
+                            <h3>
+                              Cluster{' '}
+                              {cluster.id}
+                            </h3>
+
+                            <p>
+                              Records:{' '}
+                              {
+                                cluster.records.length
+                              }
                             </p>
-                          ))}
 
-                          <hr />
-                          {SPECIES.map((s) => (
-                            <p key={s.id}>
-                              {s.name}: {c.counts[s.id]}
+                            <p>
+                              Animals:{' '}
+                              {
+                                cluster.metrics.total
+                              }
                             </p>
-                          ))}
-                        </div>
-                      </Popup>
-                    </Circle>
-                  )
-                })}
+
+                            <p>
+                              GPS:{' '}
+                              {
+                                cluster.latitude.toFixed(6)
+                              }
+                              {', '}
+                              {
+                                cluster.longitude.toFixed(6)
+                              }
+                            </p>
+
+                            <hr />
+
+                            {INDICATORS.map(
+                              ([id, label]) => (
+                                <p key={id}>
+                                  <strong>
+                                    {label}:{' '}
+                                  </strong>
+
+                                  {fmt(
+                                    cluster.metrics[id]
+                                  )}
+                                </p>
+                              )
+                            )}
+
+                            <hr />
+
+                            {SPECIES.map(
+                              (species) => (
+                                <p
+                                  key={species.id}
+                                >
+                                  {species.name}
+                                  {': '}
+                                  {
+                                    cluster.counts[
+                                      species.id
+                                    ]
+                                  }
+                                </p>
+                              )
+                            )}
+                          </div>
+                        </Popup>
+                      </Circle>
+                    )
+                  }
+                )}
               </MapContainer>
             </div>
 
             <p className="muted">
-              Map tiles require internet access. Circles represent
-              recording locations grouped within the selected distance.
-              Colors are visualization values, not ecological safety
-              thresholds.
+              Map tiles require internet access.
+              GPS points are grouped using
+              complete-linkage clustering.
+              Colors are visualization values,
+              not ecological safety thresholds.
             </p>
+
+            {clusters.length === 0 && (
+              <div className="notice">
+                No valid GPS clusters.
+              </div>
+            )}
           </section>
         )}
 
-        {/* EXPORT */}
+        {/* ================================================
+            EXPORT
+        ================================================ */}
+
         {page === 'export' && (
           <section className="card">
             <h2>Export / Backup</h2>
 
-            <button className="primary-button" onClick={exportCsv}>
+            <button
+              className="primary-button"
+              onClick={exportCsv}
+            >
               Download CSV
             </button>
 
-            <button className="secondary-button" onClick={exportJson}>
+            <button
+              className="secondary-button"
+              onClick={exportJson}
+            >
               Download JSON Backup
             </button>
 
             <h3>Import JSON Backup</h3>
+
             <input
               type="file"
               accept=".json,application/json"
@@ -1478,174 +3013,212 @@ export default function App() {
             />
 
             <p className="muted">
-              Records with matching IDs are replaced.
-              Imported data can be combined on the Map.
-              Exported files contain potentially sensitive GPS data.
+              Records with matching IDs are
+              replaced. Imported records can
+              also be displayed on the Map.
             </p>
           </section>
         )}
 
-        {/* SETTINGS PASSWORD */}
-        {page === 'settings' && !settingsUnlocked && (
-          <section className="card">
-            <h2>Settings</h2>
-            <p>Enter the administrator password.</p>
+        {/* ================================================
+            SETTINGS PASSWORD
+        ================================================ */}
 
-            <input
-              type="password"
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
+        {page === 'settings' &&
+          !settingsUnlocked && (
+            <section className="card">
+              <h2>Settings</h2>
 
-            <button
-              className="primary-button"
-              onClick={() => {
-                if (password === SETTINGS_PASSWORD) {
-                  setSettingsUnlocked(true)
-                  setPassword('')
-                  setMessage('')
-                } else {
-                  setMessage('Incorrect password.')
+              <p>
+                Enter the administrator password.
+              </p>
+
+              <input
+                type="password"
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder="Password"
+                value={password}
+                onChange={(event) =>
+                  setPassword(
+                    event.target.value
+                  )
                 }
-              }}
-            >
-              Unlock Settings
-            </button>
-          </section>
-        )}
+              />
 
-        {/* SETTINGS CONTENT */}
-        {page === 'settings' && settingsUnlocked && (
-          <section className="card">
-            <h2>Settings</h2>
-
-            <h3>Hunter ID</h3>
-            <input
-              value={settings.hunterId}
-              placeholder="e.g. H01"
-              onChange={(e) =>
-                setSettings((s) => ({
-                  ...s,
-                  hunterId: e.target.value,
-                }))
-              }
-            />
-
-            <h3>Maximum GPS error (m)</h3>
-            <input
-              type="number"
-              min="1"
-              value={settings.maxGpsAccuracy}
-              onChange={(e) =>
-                setSettings((s) => ({
-                  ...s,
-                  maxGpsAccuracy:
-                    Math.max(1, Number(e.target.value) || 1),
-                }))
-              }
-            />
-
-            <h3>R/B color scale</h3>
-            <div className="map-settings-row">
-              <label>
-                Minimum
-                <input
-                  type="number"
-                  step="0.1"
-                  value={settings.colorMin}
-                  onChange={(e) =>
-                    setSettings((s) => ({
-                      ...s,
-                      colorMin: Number(e.target.value),
-                    }))
+              <button
+                className="primary-button"
+                onClick={() => {
+                  if (
+                    password ===
+                    SETTINGS_PASSWORD
+                  ) {
+                    setSettingsUnlocked(true)
+                    setPassword('')
+                    setMessage('')
+                  } else {
+                    setMessage(
+                      'Incorrect password.'
+                    )
                   }
-                />
-              </label>
+                }}
+              >
+                Unlock Settings
+              </button>
+            </section>
+          )}
 
-              <label>
-                Maximum
-                <input
-                  type="number"
-                  step="0.1"
-                  value={settings.colorMax}
-                  onChange={(e) =>
-                    setSettings((s) => ({
-                      ...s,
-                      colorMax: Number(e.target.value),
-                    }))
-                  }
-                />
-              </label>
-            </div>
+        {/* ================================================
+            SETTINGS CONTENT
+        ================================================ */}
 
-            <h3>Species parameters</h3>
-            <p className="muted">
-              Mean mass: Hongo et al. (2022).
-              rmax: values attributed to Fa et al. (2015);
-              original supplementary data verification is still required.
-            </p>
+        {page === 'settings' &&
+          settingsUnlocked && (
+            <section className="card">
+              <h2>Settings</h2>
 
-            {SPECIES.map((species) => (
-              <div className="parameter-row" key={species.id}>
-                <strong>{species.name}</strong>
+              <h3>Hunter ID</h3>
 
-                <div className="map-settings-row">
-                  <label>
-                    Mean mass (kg)
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={settings.masses[species.id]}
-                      onChange={(e) =>
-                        setSettings((s) => ({
-                          ...s,
-                          masses: {
-                            ...s.masses,
-                            [species.id]: e.target.value,
-                          },
-                        }))
-                      }
-                    />
-                  </label>
+              <input
+                value={settings.hunterId}
+                placeholder="e.g. H01"
+                onChange={(event) =>
+                  setSettings(
+                    (previous) => ({
+                      ...previous,
 
-                  <label>
-                    rmax
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={settings.rmax[species.id]}
-                      onChange={(e) =>
-                        setSettings((s) => ({
-                          ...s,
-                          rmax: {
-                            ...s.rmax,
-                            [species.id]: e.target.value,
-                          },
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
-              </div>
-            ))}
+                      hunterId:
+                        event.target.value,
+                    })
+                  )
+                }
+              />
 
-            <button
-              className="secondary-button"
-              onClick={() => setSettingsUnlocked(false)}
-            >
-              Lock Settings
-            </button>
-          </section>
-        )}
+              <h3>
+                Maximum GPS error (m)
+              </h3>
+
+              <input
+                type="number"
+                min="1"
+                value={
+                  settings.maxGpsAccuracy
+                }
+                onChange={(event) =>
+                  setSettings(
+                    (previous) => ({
+                      ...previous,
+
+                      maxGpsAccuracy:
+                        Math.max(
+                          1,
+                          Number(
+                            event.target.value
+                          ) || 1
+                        ),
+                    })
+                  )
+                }
+              />
+
+              <h3>
+                Species parameters
+              </h3>
+
+              <p className="muted">
+                Mean mass: Hongo et al. (2022).
+                rmax: values attributed to
+                Fa et al. (2015).
+              </p>
+
+              {SPECIES.map(
+                (species) => (
+                  <div
+                    className="parameter-row"
+                    key={species.id}
+                  >
+                    <strong>
+                      {species.name}
+                    </strong>
+
+                    <div className="map-settings-row">
+                      <label>
+                        Mean mass (kg)
+
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={
+                            settings.masses[
+                              species.id
+                            ]
+                          }
+                          onChange={(event) =>
+                            setSettings(
+                              (previous) => ({
+                                ...previous,
+
+                                masses: {
+                                  ...previous.masses,
+
+                                  [species.id]:
+                                    event.target.value,
+                                },
+                              })
+                            )
+                          }
+                        />
+                      </label>
+
+                      <label>
+                        rmax
+
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={
+                            settings.rmax[
+                              species.id
+                            ]
+                          }
+                          onChange={(event) =>
+                            setSettings(
+                              (previous) => ({
+                                ...previous,
+
+                                rmax: {
+                                  ...previous.rmax,
+
+                                  [species.id]:
+                                    event.target.value,
+                                },
+                              })
+                            )
+                          }
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )
+              )}
+
+              <button
+                className="secondary-button"
+                onClick={() =>
+                  setSettingsUnlocked(false)
+                }
+              >
+                Lock Settings
+              </button>
+            </section>
+          )}
+
       </main>
 
       <footer className="app-footer">
-        WIs App v3.0 · Wildlife Monitoring
+        WIs App v3.1 · Wildlife Monitoring
       </footer>
     </div>
   )
