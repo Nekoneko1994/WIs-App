@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  base: '/WIs-App/',
+
   plugins: [
     react(),
 
@@ -20,12 +22,12 @@ export default defineConfig({
         background_color: '#f2f6f1',
 
         display: 'standalone',
-        start_url: './',
-        scope: './',
+        start_url: '/WIs-App/',
+        scope: '/WIs-App/',
 
         icons: [
           {
-            src: 'icon.svg',
+            src: '/WIs-App/icon.svg',
             sizes: 'any',
             type: 'image/svg+xml',
             purpose: 'any',
@@ -34,7 +36,8 @@ export default defineConfig({
       },
 
       workbox: {
-        navigateFallback: 'index.html',
+        navigateFallback: '/WIs-App/index.html',
+
         globPatterns: [
           '**/*.{js,css,html,svg,png,ico}',
         ],
