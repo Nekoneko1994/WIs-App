@@ -3,8 +3,9 @@ import {
   MapContainer,
   TileLayer,
   Circle,
-  Popup,
+  CircleMarker,
   Marker,
+  Popup,
   useMap,
 } from 'react-leaflet'
 import L from 'leaflet'
@@ -13,10 +14,19 @@ import 'leaflet/dist/leaflet.css'
 import './App.css'
 
 // ============================================================
-// WIs App v3.1
+// WIs App v4.0
+// Wildlife Indicators Monitoring
+//
+// - Catch records only
+// - Six wildlife indicators
+// - No CPUE or hunting effort inputs
+// - Individual GPS records and clustered WI map
+// - Offline record storage using IndexedDB
 // ============================================================
 
-// Species
+// ------------------------------------------------------------
+// Species and methods
+// ------------------------------------------------------------
 
 const SPECIES = [
   { id: 'blue', name: 'Blue duiker', icon: '🦌' },
@@ -26,7 +36,7 @@ const SPECIES = [
   { id: 'rat', name: "Emin's pouched rat", icon: '🐀' },
 ]
 
-const IDS = SPECIES.map((species) => species.id)
+const IDS = SPECIES.map((s) => s.id)
 
 const METHODS = ['Gun', 'Snare', 'Other']
 
@@ -37,29 +47,29 @@ const PERIODS = [
   'Unknown',
 ]
 
-const EMPTY = () =>
-  Object.fromEntries(
-    IDS.map((id) => [id, 0])
-  )
+const INDICATORS = [
+  ['rb', 'R/B ratio'],
+  ['red', 'Red proportion'],
+  ['dr', 'D/R ratio'],
+  ['duiker', 'Duiker proportion'],
+  ['mass', 'Mean body mass (kg)'],
+  ['rmax', 'Reciprocal mean-rmax'],
+]
 
-const EMPTY_BY_METHOD = () =>
-  Object.fromEntries(
-    METHODS.map((method) => [method, EMPTY()])
-  )
+// ------------------------------------------------------------
+// Database and settings
+// ------------------------------------------------------------
 
-// Database
+// Keep original database names for compatibility.
 
 const DB_NAME = 'wis-app-records-v1'
-const DB_STORE = 'records'
+const STORE = 'records'
+
 const SETTINGS_KEY = 'wis-app-settings-v2'
-
 const SETTINGS_PASSWORD = '6918'
-
-// Default settings
 
 const DEFAULT_SETTINGS = {
   hunterId: '',
-
   clusterDistance: 30,
   circleRadius: 30,
   maxGpsAccuracy: 100,
@@ -72,11 +82,8 @@ const DEFAULT_SETTINGS = {
     rat: 1.0,
   },
 
-  // Values attributed to Fa et al. (2015)
-  // through a secondary tabulation.
-  // Direct verification against the original
-  // supplementary dataset remains necessary.
-
+  // Provisional rmax values.
+  // Verify primary-source values before scientific publication.
   rmax: {
     blue: 0.49,
     peters: 0.44,
@@ -86,60 +93,26 @@ const DEFAULT_SETTINGS = {
   },
 }
 
-// Indicators
-
-const INDICATORS = [
-  ['rb', 'R/B ratio'],
-  ['red', 'Red proportion'],
-  ['dr', 'D/R ratio'],
-  ['duiker', 'Duiker proportion'],
-  ['mass', 'Mean body mass (kg)'],
-  ['rmax', 'Reciprocal mean-rmax'],
-  ['gunCpue', 'Gun CPUE'],
-  ['snareCpue', 'Snare CPUE'],
-]
-
-// Fixed color scales for composition indicators
-
 const FIXED_SCALES = {
-  rb: {
-    min: 0,
-    middle: 1,
-    max: 2,
-  },
-
-  dr: {
-    min: 0,
-    middle: 1,
-    max: 2,
-  },
-
-  red: {
-    min: 0,
-    middle: 0.5,
-    max: 1,
-  },
-
-  duiker: {
-    min: 0,
-    middle: 0.5,
-    max: 1,
-  },
+  rb: { min: 0, middle: 1, max: 2 },
+  dr: { min: 0, middle: 1, max: 2 },
+  red: { min: 0, middle: 0.5, max: 1 },
+  duiker: { min: 0, middle: 0.5, max: 1 },
 }
 
-// Leaflet marker icon fix
+// ------------------------------------------------------------
+// Leaflet marker icon
+// ------------------------------------------------------------
 
 delete L.Icon.Default.prototype._getIconUrl
 
 L.Icon.Default.mergeOptions({
   iconRetinaUrl:
-    'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-
+    'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
   iconUrl:
-    'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-
+    'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
   shadowUrl:
-    'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+    'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 })
 
 // ============================================================
@@ -153,41 +126,35 @@ function openDb() {
     request.onupgradeneeded = () => {
       const db = request.result
 
-      if (!db.objectStoreNames.contains(DB_STORE)) {
-        db.createObjectStore(DB_STORE, {
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE, {
           keyPath: 'id',
         })
       }
     }
 
-    request.onsuccess = () => {
-      resolve(request.result)
-    }
-
-    request.onerror = () => {
-      reject(request.error)
-    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
   })
 }
 
-async function databaseAction(action, data) {
+async function dbAction(action, data) {
   const db = await openDb()
 
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(
-      DB_STORE,
+    const tx = db.transaction(
+      STORE,
       action === 'read' ? 'readonly' : 'readwrite'
     )
 
-    const store = transaction.objectStore(DB_STORE)
-
-    let result
+    const store = tx.objectStore(STORE)
+    let result = null
 
     if (action === 'read') {
-      const request = store.getAll()
+      const req = store.getAll()
 
-      request.onsuccess = () => {
-        result = request.result
+      req.onsuccess = () => {
+        result = req.result
       }
     }
 
@@ -205,64 +172,43 @@ async function databaseAction(action, data) {
       }
     }
 
-    transaction.oncomplete = () => {
+    tx.oncomplete = () => {
       db.close()
       resolve(result)
     }
 
-    transaction.onerror = () => {
+    tx.onerror = () => {
       db.close()
-      reject(transaction.error)
+      reject(tx.error)
     }
 
-    transaction.onabort = () => {
+    tx.onabort = () => {
       db.close()
-      reject(
-        transaction.error ||
-        new Error('Database transaction aborted')
-      )
+      reject(tx.error || new Error('Transaction aborted'))
     }
   })
 }
 
 // ============================================================
-// Date utilities
+// Dates
 // ============================================================
 
 function today(offset = 0) {
   const date = new Date()
+  date.setDate(date.getDate() - offset)
 
-  date.setDate(
-    date.getDate() - offset
-  )
-
-  const year = date.getFullYear()
-
-  const month = String(
-    date.getMonth() + 1
-  ).padStart(2, '0')
-
-  const day = String(
-    date.getDate()
-  ).padStart(2, '0')
-
-  return `${year}-${month}-${day}`
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-')
 }
 
 function validDate(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return false
-  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
 
-  const [year, month, day] = value
-    .split('-')
-    .map(Number)
-
-  const date = new Date(
-    year,
-    month - 1,
-    day
-  )
+  const [year, month, day] = value.split('-').map(Number)
+  const date = new Date(year, month - 1, day)
 
   return (
     date.getFullYear() === year &&
@@ -272,9 +218,25 @@ function validDate(value) {
   )
 }
 
+function dateLabel(offset) {
+  return ['Today', 'Yesterday', 'Two days ago'][offset]
+}
+
 // ============================================================
-// Record utilities
+// Record structure and compatibility
 // ============================================================
+
+function emptyCounts() {
+  return Object.fromEntries(
+    IDS.map((id) => [id, 0])
+  )
+}
+
+function emptyByMethod() {
+  return Object.fromEntries(
+    METHODS.map((method) => [method, emptyCounts()])
+  )
+}
 
 function cleanCounts(input = {}) {
   return Object.fromEntries(
@@ -300,14 +262,15 @@ function cleanByMethod(input = {}) {
   )
 }
 
-// Compatibility with older records
+// Old records may contain one huntingMethod and counts.
+// New records contain byMethod.
 
 function getByMethod(record) {
   if (record.byMethod) {
     return cleanByMethod(record.byMethod)
   }
 
-  const result = EMPTY_BY_METHOD()
+  const result = emptyByMethod()
 
   const method =
     record.huntingMethod ||
@@ -315,9 +278,7 @@ function getByMethod(record) {
     'Other'
 
   if (METHODS.includes(method)) {
-    result[method] = cleanCounts(
-      record.counts || {}
-    )
+    result[method] = cleanCounts(record.counts || {})
   }
 
   return result
@@ -330,15 +291,27 @@ function countTotal(counts) {
   )
 }
 
-function totalsOf(records) {
-  const totals = EMPTY()
+function recordTotal(record) {
+  const matrix = getByMethod(record)
+
+  return METHODS.reduce(
+    (sum, method) => sum + countTotal(matrix[method]),
+    0
+  )
+}
+
+function totalsOf(records, method = 'All') {
+  const totals = emptyCounts()
 
   for (const record of records) {
     const matrix = getByMethod(record)
 
-    for (const method of METHODS) {
+    const methods =
+      method === 'All' ? METHODS : [method]
+
+    for (const m of methods) {
       for (const id of IDS) {
-        totals[id] += matrix[method][id]
+        totals[id] += matrix[m][id]
       }
     }
   }
@@ -346,35 +319,16 @@ function totalsOf(records) {
   return totals
 }
 
-function totalsByMethod(records, method) {
-  const totals = EMPTY()
-
-  for (const record of records) {
-    const matrix = getByMethod(record)
-
-    for (const id of IDS) {
-      totals[id] += matrix[method][id]
-    }
-  }
-
-  return totals
-}
-
-// NEW: chronological history
-//
-// First: capture date, newest first.
-// Second: recording timestamp, newest first.
+// Newest capture date first.
+// If the same date, newest saved record first.
 
 function sortRecords(records) {
   return [...records].sort((a, b) => {
-    const dateComparison =
-      (b.captureDate || '').localeCompare(
-        a.captureDate || ''
-      )
+    const dateOrder = (b.captureDate || '').localeCompare(
+      a.captureDate || ''
+    )
 
-    if (dateComparison !== 0) {
-      return dateComparison
-    }
+    if (dateOrder !== 0) return dateOrder
 
     return (b.recordedAt || '').localeCompare(
       a.recordedAt || ''
@@ -382,36 +336,28 @@ function sortRecords(records) {
   })
 }
 
-function fmt(value, digits = 3) {
-  if (
-    value == null ||
-    !Number.isFinite(value)
-  ) {
-    return 'N/A'
-  }
-
-  return Number(value).toFixed(digits)
-}
-
 function blankForm() {
   return {
     id: null,
-
     captureDate: today(),
     period: 'Morning',
-
-    byMethod: EMPTY_BY_METHOD(),
-
-    gunEffort: '',
-    snareEffort: '',
-
+    byMethod: emptyByMethod(),
     note: '',
     previousLocation: null,
   }
 }
 
+function fmt(value, digits = 3) {
+  return (
+    value == null ||
+    !Number.isFinite(value)
+  )
+    ? 'N/A'
+    : Number(value).toFixed(digits)
+}
+
 // ============================================================
-// Wildlife Indicators
+// Six Wildlife Indicators
 // ============================================================
 
 function calculateIndicators(counts, settings) {
@@ -429,113 +375,52 @@ function calculateIndicators(counts, settings) {
 
   const total = duikers + rodents
 
-  const ratio = (a, b) =>
-    b > 0 ? a / b : null
+  // Zero denominator -> undefined -> N/A.
 
-  function weightedAverage(key) {
+  function ratio(numerator, denominator) {
+    return denominator > 0
+      ? numerator / denominator
+      : null
+  }
+
+  function weightedMean(parameterName) {
     if (total === 0) return null
 
-    let weightedTotal = 0
+    let sum = 0
 
     for (const id of IDS) {
       if (!counts[id]) continue
 
-      const raw = settings[key]?.[id]
+      const raw = settings[parameterName]?.[id]
       const value = Number(raw)
 
       if (
-        raw === '' ||
         raw == null ||
+        raw === '' ||
         !Number.isFinite(value) ||
         value <= 0
       ) {
         return null
       }
 
-      weightedTotal += counts[id] * value
+      sum += counts[id] * value
     }
 
-    return weightedTotal / total
+    return sum / total
   }
 
-  const mass = weightedAverage('masses')
-  const meanRmax = weightedAverage('rmax')
+  const mass = weightedMean('masses')
+  const meanRmax = weightedMean('rmax')
 
   return {
     rb: ratio(red, blue),
-
     red: ratio(red, duikers),
-
     dr: ratio(duikers, rodents),
-
     duiker: ratio(duikers, total),
-
     mass,
-
-    rmax:
-      meanRmax > 0
-        ? 1 / meanRmax
-        : null,
-
+    rmax: meanRmax > 0 ? 1 / meanRmax : null,
     total,
   }
-}
-
-// ============================================================
-// CPUE
-// ============================================================
-
-function calculateCpue(records, method) {
-  const effortKey =
-    method === 'Gun'
-      ? 'gunEffort'
-      : 'snareEffort'
-
-  const legacyUnit =
-    method === 'Gun'
-      ? 'hunter-day'
-      : 'trap-night'
-
-  let totalEffort = 0
-  let totalCatch = 0
-
-  for (const record of records) {
-    let effort = record[effortKey]
-
-    // Compatibility with previous record format
-
-    if (effort == null) {
-      const previousMethod =
-        record.huntingMethod ||
-        record.method
-
-      if (
-        previousMethod === method &&
-        record.effortUnit === legacyUnit
-      ) {
-        effort = record.effort
-      }
-    }
-
-    if (
-      effort === '' ||
-      effort == null ||
-      !Number.isFinite(Number(effort)) ||
-      Number(effort) <= 0
-    ) {
-      continue
-    }
-
-    totalEffort += Number(effort)
-
-    totalCatch += countTotal(
-      getByMethod(record)[method]
-    )
-  }
-
-  return totalEffort > 0
-    ? totalCatch / totalEffort
-    : null
 }
 
 // ============================================================
@@ -545,9 +430,7 @@ function calculateCpue(records, method) {
 function getPosition() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
-      reject(
-        new Error('Geolocation is unavailable')
-      )
+      reject(new Error('Geolocation is unavailable'))
       return
     }
 
@@ -562,11 +445,7 @@ function getPosition() {
           ).toISOString(),
         })
       },
-
-      (error) => {
-        reject(error)
-      },
-
+      reject,
       {
         enableHighAccuracy: true,
         maximumAge: 0,
@@ -579,63 +458,70 @@ function getPosition() {
 function validLocation(location) {
   if (!location) return false
 
-  const latitude = Number(
-    location.latitude
-  )
-
-  const longitude = Number(
-    location.longitude
-  )
+  const lat = Number(location.latitude)
+  const lon = Number(location.longitude)
 
   return (
-    Number.isFinite(latitude) &&
-    Number.isFinite(longitude) &&
-    latitude >= -90 &&
-    latitude <= 90 &&
-    longitude >= -180 &&
-    longitude <= 180
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lon) <= 180
+  )
+}
+
+function validAccuracy(location, maxAccuracy) {
+  if (!validLocation(location)) return false
+
+  if (
+    location.accuracy == null ||
+    location.accuracy === ''
+  ) {
+    return false
+  }
+
+  const accuracy = Number(location.accuracy)
+
+  return (
+    Number.isFinite(accuracy) &&
+    accuracy >= 0 &&
+    accuracy <= Number(maxAccuracy)
   )
 }
 
 const EARTH_RADIUS = 6371000
 
-function radians(degrees) {
-  return degrees * Math.PI / 180
+function radians(value) {
+  return value * Math.PI / 180
 }
 
 function distance(a, b) {
-  const deltaLatitude = radians(
-    b.latitude - a.latitude
-  )
-
-  const deltaLongitude = radians(
-    b.longitude - a.longitude
-  )
+  const dLat = radians(b.latitude - a.latitude)
+  const dLon = radians(b.longitude - a.longitude)
 
   const h =
-    Math.sin(deltaLatitude / 2) ** 2 +
+    Math.sin(dLat / 2) ** 2 +
     Math.cos(radians(a.latitude)) *
-    Math.cos(radians(b.latitude)) *
-    Math.sin(deltaLongitude / 2) ** 2
+      Math.cos(radians(b.latitude)) *
+      Math.sin(dLon / 2) ** 2
 
   return (
     2 *
     EARTH_RADIUS *
-    Math.asin(
-      Math.min(1, Math.sqrt(h))
-    )
+    Math.asin(Math.min(1, Math.sqrt(h)))
   )
 }
 
 // ============================================================
-// Complete-linkage GPS clustering
+// GPS clustering
+//
+// Complete linkage:
+// Every pair of points in a cluster must be
+// within the selected distance threshold.
 // ============================================================
 
 function clusterRecords(records, threshold) {
   let groups = records
-    .filter(
-      (record) => validLocation(record.location)
-    )
+    .filter((record) => validLocation(record.location))
     .map((record) => [record])
 
   function maximumDistance(groupA, groupB) {
@@ -654,39 +540,27 @@ function clusterRecords(records, threshold) {
   }
 
   while (groups.length > 1) {
-    let bestPair = null
-    let bestDistance = Infinity
+    let best = null
+    let minimum = Infinity
 
     for (let i = 0; i < groups.length; i++) {
       for (let j = i + 1; j < groups.length; j++) {
-        const d = maximumDistance(
-          groups[i],
-          groups[j]
-        )
+        const d = maximumDistance(groups[i], groups[j])
 
-        if (
-          d <= threshold &&
-          d < bestDistance
-        ) {
-          bestPair = [i, j]
-          bestDistance = d
+        if (d <= threshold && d < minimum) {
+          minimum = d
+          best = [i, j]
         }
       }
     }
 
-    if (!bestPair) break
+    if (!best) break
 
-    const [i, j] = bestPair
-
-    const merged = [
-      ...groups[i],
-      ...groups[j],
-    ]
+    const [i, j] = best
+    const merged = [...groups[i], ...groups[j]]
 
     groups = groups.filter(
-      (_, index) =>
-        index !== i &&
-        index !== j
+      (_, index) => index !== i && index !== j
     )
 
     groups.push(merged)
@@ -694,7 +568,6 @@ function clusterRecords(records, threshold) {
 
   return groups.map((group, index) => ({
     id: index + 1,
-
     records: group,
 
     latitude:
@@ -714,35 +587,30 @@ function clusterRecords(records, threshold) {
 }
 
 // ============================================================
-// NEW: Map color scales
+// Map colors
 // ============================================================
 
 const RED = [220, 55, 55]
 const YELLOW = [240, 205, 45]
 const GREEN = [40, 150, 85]
 
-function clamp(value, minimum, maximum) {
-  return Math.min(
-    maximum,
-    Math.max(minimum, value)
-  )
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value))
 }
 
 function interpolateColor(start, end, fraction) {
   const t = clamp(fraction, 0, 1)
 
-  const rgb = start.map(
-    (component, i) =>
-      Math.round(
-        component +
-        (end[i] - component) * t
-      )
+  const rgb = start.map((value, index) =>
+    Math.round(
+      value + (end[index] - value) * t
+    )
   )
 
   return `rgb(${rgb.join(',')})`
 }
 
-function getColor(value, minimum, maximum) {
+function getColor(value, scale) {
   if (
     value == null ||
     !Number.isFinite(value)
@@ -750,83 +618,62 @@ function getColor(value, minimum, maximum) {
     return '#999999'
   }
 
-  if (
-    !Number.isFinite(minimum) ||
-    !Number.isFinite(maximum) ||
-    maximum <= minimum
-  ) {
-    return '#999999'
+  const { min, middle, max } = scale
+
+  if (value <= middle) {
+    const t =
+      middle > min
+        ? (value - min) / (middle - min)
+        : 0.5
+
+    return interpolateColor(RED, YELLOW, t)
   }
 
-  const t = clamp(
-    (value - minimum) /
-      (maximum - minimum),
-    0,
-    1
-  )
+  const t =
+    max > middle
+      ? (value - middle) / (max - middle)
+      : 0.5
 
-  if (t <= 0.5) {
-    return interpolateColor(
-      RED,
-      YELLOW,
-      t * 2
-    )
-  }
-
-  return interpolateColor(
-    YELLOW,
-    GREEN,
-    (t - 0.5) * 2
-  )
+  return interpolateColor(YELLOW, GREEN, t)
 }
 
-// Fixed scales for R/B, D/R,
-// Red proportion and Duiker proportion.
+// R/B and D/R: 0 red, 1 yellow, >=2 green.
+// Proportions: 0 red, 0.5 yellow, 1 green.
 //
-// Other indicators use their own
-// observed-value ranges.
+// Mean mass and reciprocal mean-rmax
+// retain observed-value relative scales.
 
-function getMapScale(indicatorId, clusters) {
-  if (FIXED_SCALES[indicatorId]) {
-    return FIXED_SCALES[indicatorId]
+function getMapScale(indicator, clusters) {
+  if (FIXED_SCALES[indicator]) {
+    return FIXED_SCALES[indicator]
   }
 
   const values = clusters
-    .map(
-      (cluster) =>
-        cluster.metrics[indicatorId]
-    )
+    .map((cluster) => cluster.metrics[indicator])
     .filter(
       (value) =>
-        value != null &&
-        Number.isFinite(value)
+        value != null && Number.isFinite(value)
     )
 
-  if (!values.length) {
-    return {
-      min: 0,
-      middle: 0.5,
-      max: 1,
-    }
+  if (values.length === 0) {
+    return { min: 0, middle: 0.5, max: 1 }
   }
 
-  const minimum = Math.min(...values)
-  const maximum = Math.max(...values)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
 
-  if (minimum === maximum) {
-    // No spatial variation:
-    // show every valid cluster as yellow.
+  if (min === max) {
     return {
-      min: minimum - 0.5,
-      middle: minimum,
-      max: minimum + 0.5,
+      min: min - 0.5,
+      middle: min,
+      max: min + 0.5,
     }
   }
 
   return {
-    min: minimum,
-    middle: (minimum + maximum) / 2,
-    max: maximum,
+    min,
+    middle: (min + max) / 2,
+    max,
   }
 }
 
@@ -834,41 +681,35 @@ function getMapScale(indicatorId, clusters) {
 // Map components
 // ============================================================
 
-function FitBounds({ clusters }) {
+function FitMap({ points }) {
   const map = useMap()
 
   useEffect(() => {
-    if (clusters.length === 0) return
+    if (points.length === 0) return
 
-    if (clusters.length === 1) {
+    if (points.length === 1) {
       map.setView(
-        [
-          clusters[0].latitude,
-          clusters[0].longitude,
-        ],
+        [points[0].latitude, points[0].longitude],
         17
       )
-
-      return
+    } else {
+      map.fitBounds(
+        points.map((point) => [
+          point.latitude,
+          point.longitude,
+        ]),
+        {
+          padding: [45, 45],
+          maxZoom: 17,
+        }
+      )
     }
-
-    map.fitBounds(
-      clusters.map((cluster) => [
-        cluster.latitude,
-        cluster.longitude,
-      ]),
-
-      {
-        padding: [45, 45],
-        maxZoom: 17,
-      }
-    )
-  }, [clusters, map])
+  }, [map, points])
 
   return null
 }
 
-// NEW: individual-record map
+// Individual-record map used from History.
 
 function RecordLocationMap({ record }) {
   if (!validLocation(record.location)) {
@@ -879,34 +720,18 @@ function RecordLocationMap({ record }) {
     )
   }
 
-  const latitude = Number(
-    record.location.latitude
-  )
-
-  const longitude = Number(
-    record.location.longitude
-  )
-
-  const accuracy = Number(
-    record.location.accuracy
-  )
-
-  const markerCenter = [
-    latitude,
-    longitude,
-  ]
+  const lat = Number(record.location.latitude)
+  const lon = Number(record.location.longitude)
+  const accuracy = Number(record.location.accuracy)
 
   return (
     <>
-      <div
-        className="map-container"
-        style={{ marginTop: 12 }}
-      >
+      <div className="map-container">
         <MapContainer
-          center={markerCenter}
+          center={[lat, lon]}
           zoom={18}
-          scrollWheelZoom={true}
           className="leaflet-map"
+          scrollWheelZoom
           style={{ height: 360 }}
         >
           <TileLayer
@@ -915,11 +740,9 @@ function RecordLocationMap({ record }) {
             maxZoom={19}
           />
 
-          <Marker position={markerCenter}>
+          <Marker position={[lat, lon]}>
             <Popup>
-              <strong>
-                {record.captureDate}
-              </strong>
+              <strong>{record.captureDate}</strong>
               <br />
               Recording location
               <br />
@@ -930,7 +753,7 @@ function RecordLocationMap({ record }) {
           {Number.isFinite(accuracy) &&
             accuracy > 0 && (
               <Circle
-                center={markerCenter}
+                center={[lat, lon]}
                 radius={accuracy}
                 pathOptions={{
                   color: '#2563eb',
@@ -944,11 +767,11 @@ function RecordLocationMap({ record }) {
       </div>
 
       <p className="muted">
-        Latitude: {latitude.toFixed(6)}
+        Latitude: {lat.toFixed(6)}
         <br />
-        Longitude: {longitude.toFixed(6)}
+        Longitude: {lon.toFixed(6)}
         <br />
-        Accuracy:{' '}
+        GPS accuracy:{' '}
         {Number.isFinite(accuracy)
           ? `±${Math.round(accuracy)} m`
           : 'Unknown'}
@@ -958,20 +781,52 @@ function RecordLocationMap({ record }) {
       </p>
 
       <p className="muted">
-        This map shows the recording location,
-        not necessarily the capture location.
+        The map shows the location where the record
+        was saved, not necessarily where the animal
+        was captured.
       </p>
     </>
   )
 }
 
+// Display every catch record on the map.
+//
+// If several records have exactly the same GPS
+// coordinates, combine only their popups,
+// not their wildlife indicators.
+
+function groupExactCoordinates(records) {
+  const groups = new Map()
+
+  for (const record of records) {
+    const lat = Number(record.location.latitude)
+    const lon = Number(record.location.longitude)
+
+    const key = `${lat},${lon}`
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        id: key,
+        latitude: lat,
+        longitude: lon,
+        records: [],
+      })
+    }
+
+    groups.get(key).records.push(record)
+  }
+
+  return [...groups.values()]
+}
+
 // ============================================================
-// Export
+// CSV and JSON export
 // ============================================================
 
 function csvCell(value) {
   let text = String(value ?? '')
 
+  // Prevent spreadsheet formula injection.
   if (/^[=+\-@\t\r]/.test(text)) {
     text = "'" + text
   }
@@ -981,14 +836,12 @@ function csvCell(value) {
     : text
 }
 
-function download(filename, content, type) {
-  const blob = new Blob(
-    [content],
-    { type }
-  )
+function download(filename, content, mimeType) {
+  const blob = new Blob([content], {
+    type: mimeType,
+  })
 
   const url = URL.createObjectURL(blob)
-
   const link = document.createElement('a')
 
   link.href = url
@@ -998,10 +851,7 @@ function download(filename, content, type) {
   link.click()
   link.remove()
 
-  setTimeout(
-    () => URL.revokeObjectURL(url),
-    15000
-  )
+  setTimeout(() => URL.revokeObjectURL(url), 15000)
 }
 
 // ============================================================
@@ -1009,35 +859,58 @@ function download(filename, content, type) {
 // ============================================================
 
 export default function App() {
+  // ----------------------------------------------------------
+  // State
+  // ----------------------------------------------------------
+
   const [page, setPage] = useState('home')
 
   const [records, setRecords] = useState([])
   const [dbReady, setDbReady] = useState(false)
 
+  const [form, setForm] = useState(blankForm)
+
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
 
-  const [form, setForm] = useState(blankForm)
+  const [selectedRecordId, setSelectedRecordId] =
+    useState(null)
+
+  const [methodFilter, setMethodFilter] =
+    useState('All')
+
+  const [monthFilter, setMonthFilter] =
+    useState('All')
+
+  const [mapMode, setMapMode] =
+    useState('indicators')
+
+  const [mapIndicator, setMapIndicator] =
+    useState('rb')
+
+  const [settingsUnlocked, setSettingsUnlocked] =
+    useState(false)
+
+  const [password, setPassword] = useState('')
 
   const [settings, setSettings] = useState(() => {
     try {
-      const data = JSON.parse(
-        localStorage.getItem(SETTINGS_KEY) ||
-        'null'
+      const saved = JSON.parse(
+        localStorage.getItem(SETTINGS_KEY) || 'null'
       )
 
       return {
         ...DEFAULT_SETTINGS,
-        ...data,
+        ...saved,
 
         masses: {
           ...DEFAULT_SETTINGS.masses,
-          ...data?.masses,
+          ...saved?.masses,
         },
 
         rmax: {
           ...DEFAULT_SETTINGS.rmax,
-          ...data?.rmax,
+          ...saved?.rmax,
         },
       }
     } catch {
@@ -1045,60 +918,24 @@ export default function App() {
     }
   })
 
-  const [
-    settingsUnlocked,
-    setSettingsUnlocked,
-  ] = useState(false)
-
-  const [password, setPassword] = useState('')
-
-  const [
-    methodFilter,
-    setMethodFilter,
-  ] = useState('All')
-
-  const [
-    monthFilter,
-    setMonthFilter,
-  ] = useState('All')
-
-  const [
-    mapIndicator,
-    setMapIndicator,
-  ] = useState('rb')
-
-  // NEW: selected history record
-
-  const [
-    selectedRecordId,
-    setSelectedRecordId,
-  ] = useState(null)
-
-  const saveInProgress = useRef(false)
+  const savingRef = useRef(false)
 
   // ----------------------------------------------------------
-  // Read saved records
+  // Load records
   // ----------------------------------------------------------
 
   useEffect(() => {
-    databaseAction('read')
+    dbAction('read')
       .then((data) => {
-        setRecords(
-          sortRecords(data)
-        )
-
+        setRecords(sortRecords(data))
         setDbReady(true)
       })
-
       .catch((error) => {
         setMessage(
-          'Database error: ' +
-          error.message
+          'Database error: ' + error.message
         )
       })
   }, [])
-
-  // Save settings
 
   useEffect(() => {
     try {
@@ -1107,7 +944,7 @@ export default function App() {
         JSON.stringify(settings)
       )
     } catch {
-      // Storage may be unavailable in restricted browsers.
+      // Ignore localStorage errors.
     }
   }, [settings])
 
@@ -1115,15 +952,15 @@ export default function App() {
   // Navigation
   // ----------------------------------------------------------
 
-  function navigate(target) {
+  function navigate(destination) {
     setMessage('')
 
-    if (target === 'settings') {
+    if (destination === 'settings') {
       setSettingsUnlocked(false)
       setPassword('')
     }
 
-    setPage(target)
+    setPage(destination)
   }
 
   function newRecord() {
@@ -1132,45 +969,34 @@ export default function App() {
   }
 
   function updateForm(patch) {
-    setForm(
-      (previous) => ({
-        ...previous,
-        ...patch,
-      })
-    )
-  }
-
-  function changeCount(speciesId, method, delta) {
     setForm((previous) => ({
       ...previous,
-
-      byMethod: {
-        ...previous.byMethod,
-
-        [method]: {
-          ...previous.byMethod[method],
-
-          [speciesId]: Math.max(
-            0,
-            previous.byMethod[method][speciesId] +
-              delta
-          ),
-        },
-      },
+      ...patch,
     }))
   }
 
+  function changeCount(speciesId, method, delta) {
+    setForm((previous) => {
+      const matrix = cleanByMethod(previous.byMethod)
+
+      matrix[method][speciesId] = Math.max(
+        0,
+        matrix[method][speciesId] + delta
+      )
+
+      return {
+        ...previous,
+        byMethod: matrix,
+      }
+    })
+  }
+
   // ----------------------------------------------------------
-  // Save record and automatically acquire GPS
+  // Save record
   // ----------------------------------------------------------
 
   async function saveRecord() {
-    if (
-      saveInProgress.current ||
-      !dbReady
-    ) {
-      return
-    }
+    if (savingRef.current || !dbReady) return
 
     if (!settings.hunterId.trim()) {
       setMessage(
@@ -1180,46 +1006,30 @@ export default function App() {
     }
 
     if (!validDate(form.captureDate)) {
-      setMessage(
-        'Invalid capture date.'
-      )
+      setMessage('Invalid capture date.')
       return
     }
 
-    for (const value of [
-      form.gunEffort,
-      form.snareEffort,
-    ]) {
-      if (
-        value !== '' &&
-        (
-          !Number.isFinite(Number(value)) ||
-          Number(value) <= 0
-        )
-      ) {
-        setMessage(
-          'Hunting effort must be positive.'
-        )
-        return
-      }
-    }
-
-    saveInProgress.current = true
+    savingRef.current = true
     setBusy(true)
 
-    setMessage(
-      'Acquiring GPS automatically...'
-    )
-
-    const existing = records.find(
+    const previous = records.find(
       (record) => record.id === form.id
     )
 
-    let location = form.previousLocation
+    let location =
+      form.previousLocation || null
+
     let gpsError = null
 
+    setMessage('Acquiring GPS automatically...')
+
     try {
-      location = await getPosition()
+      const position = await getPosition()
+
+      // Keep the measured GPS point even if it is less
+      // accurate than the map's maximum accuracy filter.
+      location = position
     } catch (error) {
       gpsError = error.message
     }
@@ -1227,96 +1037,81 @@ export default function App() {
     const now = new Date().toISOString()
 
     const record = {
-      id:
-        form.id ||
-        crypto.randomUUID(),
+      id: form.id || crypto.randomUUID(),
 
       hunterId:
-        existing?.hunterId ||
+        previous?.hunterId ||
         settings.hunterId.trim(),
 
       captureDate: form.captureDate,
       timePeriod: form.period,
 
-      byMethod: cleanByMethod(
-        form.byMethod
-      ),
-
-      gunEffort:
-        form.gunEffort === ''
-          ? null
-          : Number(form.gunEffort),
-
-      snareEffort:
-        form.snareEffort === ''
-          ? null
-          : Number(form.snareEffort),
-
+      byMethod: cleanByMethod(form.byMethod),
       note: form.note.trim(),
 
-      location: location || null,
+      location,
       gpsError,
 
-      recordedAt:
-        existing?.recordedAt || now,
-
+      recordedAt: previous?.recordedAt || now,
       updatedAt: now,
     }
 
+    // Old effort fields are not required for v4.0,
+    // but retain them in previously saved records.
+
+    if (previous) {
+      for (const key of [
+        'gunEffort',
+        'snareEffort',
+        'effort',
+        'effortUnit',
+      ]) {
+        if (Object.hasOwn(previous, key)) {
+          record[key] = previous[key]
+        }
+      }
+    }
+
     try {
-      await databaseAction(
-        'put',
-        record
-      )
+      await dbAction('put', record)
 
-      const updated = await databaseAction(
-        'read'
-      )
+      const updated = await dbAction('read')
 
-      setRecords(
-        sortRecords(updated)
-      )
-
+      setRecords(sortRecords(updated))
       setForm(blankForm())
-      setPage('indicators')
+      setPage('history')
 
-      setMessage(
-        location
-          ? `Record saved. GPS accuracy: ±${Math.round(
-              Number(location.accuracy)
-            )} m.`
-          : `Record saved without GPS. ${
-              gpsError || ''
-            }`
-      )
+      if (location) {
+        const accuracy = Number(location.accuracy)
+
+        setMessage(
+          Number.isFinite(accuracy)
+            ? `Record saved. GPS accuracy: ±${Math.round(accuracy)} m.`
+            : 'Record saved with GPS.'
+        )
+      } else {
+        setMessage(
+          'Record saved without GPS. ' +
+          (gpsError || '')
+        )
+      }
     } catch (error) {
       setMessage(
-        'Save failed: ' +
-        error.message
+        'Save failed: ' + error.message
       )
     } finally {
+      savingRef.current = false
       setBusy(false)
-      saveInProgress.current = false
     }
   }
 
   // ----------------------------------------------------------
-  // Edit record
+  // Edit and delete
   // ----------------------------------------------------------
 
   function editRecord(record) {
-    const previousMethod =
-      record.huntingMethod ||
-      record.method
-
-    const oldEffort =
-      record.effort == null
-        ? ''
-        : String(record.effort)
-
     setForm({
       id: record.id,
-
       captureDate: record.captureDate,
 
       period:
@@ -1326,281 +1121,141 @@ export default function App() {
 
       byMethod: getByMethod(record),
 
-      gunEffort:
-        record.gunEffort != null
-          ? String(record.gunEffort)
-          : previousMethod === 'Gun'
-            ? oldEffort
-            : '',
-
-      snareEffort:
-        record.snareEffort != null
-          ? String(record.snareEffort)
-          : previousMethod === 'Snare'
-            ? oldEffort
-            : '',
-
       note: record.note || '',
-
-      previousLocation:
-        record.location || null,
+      previousLocation: record.location || null,
     })
 
     navigate('record')
   }
 
-  // ----------------------------------------------------------
-  // Delete record
-  // ----------------------------------------------------------
-
-  async function removeRecord(record) {
-    if (
-      !window.confirm(
-        'Delete this record?'
-      )
-    ) {
+  async function deleteRecord(record) {
+    if (!window.confirm('Delete this record?')) {
       return
     }
 
     try {
-      await databaseAction(
-        'delete',
-        record.id
-      )
+      await dbAction('delete', record.id)
 
-      setRecords(
-        (previous) =>
-          previous.filter(
-            (item) =>
-              item.id !== record.id
-          )
+      setRecords((previous) =>
+        previous.filter(
+          (item) => item.id !== record.id
+        )
       )
 
       if (selectedRecordId === record.id) {
         setSelectedRecordId(null)
       }
 
-      setMessage(
-        'Record deleted.'
-      )
+      setMessage('Record deleted.')
     } catch (error) {
       setMessage(
-        'Delete failed: ' +
-        error.message
+        'Delete failed: ' + error.message
       )
     }
   }
 
-  // ----------------------------------------------------------
-  // NEW: Open record detail
-  // ----------------------------------------------------------
-
   function openRecordDetail(record) {
     setSelectedRecordId(record.id)
-    navigate('recordDetail')
+    navigate('detail')
   }
 
   const selectedRecord = records.find(
-    (record) =>
-      record.id === selectedRecordId
+    (record) => record.id === selectedRecordId
   )
 
   // ----------------------------------------------------------
   // Filters
   // ----------------------------------------------------------
 
-  const months = useMemo(
-    () =>
-      [
-        ...new Set(
-          records
-            .map(
-              (record) =>
-                record.captureDate?.slice(0, 7)
-            )
-            .filter(Boolean)
-        ),
-      ].sort().reverse(),
-
-    [records]
-  )
-
-  const dateFilteredRecords = useMemo(
-    () =>
-      records.filter(
-        (record) =>
-          monthFilter === 'All' ||
-          record.captureDate?.startsWith(
-            monthFilter
+  const months = useMemo(() => {
+    return [
+      ...new Set(
+        records
+          .map((record) =>
+            record.captureDate?.slice(0, 7)
           )
+          .filter(Boolean)
       ),
+    ].sort().reverse()
+  }, [records])
 
-    [records, monthFilter]
-  )
+  const filteredRecords = useMemo(() => {
+    return records.filter((record) => {
+      const matchesMonth =
+        monthFilter === 'All' ||
+        record.captureDate?.startsWith(monthFilter)
 
-  const filteredRecords = useMemo(
-    () =>
-      dateFilteredRecords.filter(
-        (record) => {
-          if (methodFilter === 'All') {
-            return true
-          }
+      if (!matchesMonth) return false
 
-          const catches = countTotal(
-            getByMethod(record)[methodFilter]
-          )
+      if (methodFilter === 'All') return true
 
-          if (catches > 0) {
-            return true
-          }
-
-          if (
-            methodFilter === 'Gun' &&
-            Number(record.gunEffort) > 0
-          ) {
-            return true
-          }
-
-          if (
-            methodFilter === 'Snare' &&
-            Number(record.snareEffort) > 0
-          ) {
-            return true
-          }
-
-          // Legacy effort format
-
-          const legacyMethod =
-            record.huntingMethod ||
-            record.method
-
-          return (
-            legacyMethod === methodFilter &&
-            Number(record.effort) > 0
-          )
-        }
-      ),
-
-    [dateFilteredRecords, methodFilter]
-  )
+      return countTotal(
+        getByMethod(record)[methodFilter]
+      ) > 0
+    })
+  }, [records, monthFilter, methodFilter])
 
   const counts = useMemo(
-    () =>
-      methodFilter === 'All'
-        ? totalsOf(filteredRecords)
-        : totalsByMethod(
-            filteredRecords,
-            methodFilter
-          ),
-
+    () => totalsOf(filteredRecords, methodFilter),
     [filteredRecords, methodFilter]
   )
 
   const indicators = useMemo(
-    () =>
-      calculateIndicators(
-        counts,
-        settings
-      ),
-
+    () => calculateIndicators(counts, settings),
     [counts, settings]
   )
 
   // ----------------------------------------------------------
-  // Map GPS filtering
+  // Map data
   // ----------------------------------------------------------
 
-  const gpsRecords = useMemo(
-    () =>
-      filteredRecords.filter(
-        (record) => {
-          if (
-            !validLocation(
-              record.location
-            )
-          ) {
-            return false
-          }
+  const gpsRecords = useMemo(() => {
+    return filteredRecords.filter((record) =>
+      validAccuracy(
+        record.location,
+        settings.maxGpsAccuracy
+      )
+    )
+  }, [filteredRecords, settings.maxGpsAccuracy])
 
-          const accuracy = Number(
-            record.location.accuracy
-          )
-
-          return (
-            Number.isFinite(accuracy) &&
-            accuracy >= 0 &&
-            accuracy <=
-              Number(settings.maxGpsAccuracy)
-          )
-        }
-      ),
-
-    [
-      filteredRecords,
-      settings.maxGpsAccuracy,
-    ]
-  )
-
-  // ----------------------------------------------------------
-  // Map clustering
-  // ----------------------------------------------------------
-
-  const clusters = useMemo(
-    () =>
-      clusterRecords(
-        gpsRecords,
-        Number(settings.clusterDistance)
-      ).map((cluster) => {
-        const clusterCounts =
-          methodFilter === 'All'
-            ? totalsOf(cluster.records)
-            : totalsByMethod(
-                cluster.records,
-                methodFilter
-              )
-
-        return {
-          ...cluster,
-
-          counts: clusterCounts,
-
-          metrics: {
-            ...calculateIndicators(
-              clusterCounts,
-              settings
-            ),
-
-            gunCpue: calculateCpue(
-              cluster.records,
-              'Gun'
-            ),
-
-            snareCpue: calculateCpue(
-              cluster.records,
-              'Snare'
-            ),
-          },
-        }
-      }),
-
-    [
+  const clusters = useMemo(() => {
+    return clusterRecords(
       gpsRecords,
-      settings,
-      methodFilter,
-    ]
-  )
+      Number(settings.clusterDistance)
+    ).map((cluster) => {
+      const clusterCounts = totalsOf(
+        cluster.records,
+        methodFilter
+      )
 
-  // NEW: fixed scales for four indicators
+      return {
+        ...cluster,
+        counts: clusterCounts,
+        metrics: calculateIndicators(
+          clusterCounts,
+          settings
+        ),
+      }
+    })
+  }, [gpsRecords, settings, methodFilter])
 
   const mapScale = useMemo(
-    () =>
-      getMapScale(
-        mapIndicator,
-        clusters
-      ),
-
+    () => getMapScale(mapIndicator, clusters),
     [mapIndicator, clusters]
   )
+
+  const rawMapPoints = useMemo(
+    () => groupExactCoordinates(gpsRecords),
+    [gpsRecords]
+  )
+
+  const mapPoints = useMemo(() => {
+    if (mapMode === 'indicators') {
+      return clusters
+    }
+
+    return rawMapPoints
+  }, [mapMode, clusters, rawMapPoints])
 
   // ----------------------------------------------------------
   // Export CSV
@@ -1613,16 +1268,12 @@ export default function App() {
       'capture_date',
       'time_period',
 
-      ...METHODS.flatMap(
-        (method) =>
-          IDS.map(
-            (id) =>
-              `${method.toLowerCase()}_${id}`
-          )
+      ...METHODS.flatMap((method) =>
+        IDS.map(
+          (id) =>
+            `${method.toLowerCase()}_${id}`
+        )
       ),
-
-      'gun_effort_hunter_days',
-      'snare_effort_trap_nights',
 
       'latitude',
       'longitude',
@@ -1634,64 +1285,35 @@ export default function App() {
       'note',
     ]
 
-    const rows = records.map(
-      (record) => {
-        const matrix =
-          getByMethod(record)
+    const rows = records.map((record) => {
+      const matrix = getByMethod(record)
 
-        const oldMethod =
-          record.huntingMethod ||
-          record.method
+      return [
+        record.id,
+        record.hunterId,
+        record.captureDate,
+        record.timePeriod || record.period,
 
-        const oldEffort = record.effort
+        ...METHODS.flatMap((method) =>
+          IDS.map((id) => matrix[method][id])
+        ),
 
-        return [
-          record.id,
-          record.hunterId,
-          record.captureDate,
-          record.timePeriod ||
-            record.period,
+        record.location?.latitude ?? '',
+        record.location?.longitude ?? '',
+        record.location?.accuracy ?? '',
+        record.location?.timestamp ?? '',
 
-          ...METHODS.flatMap(
-            (method) =>
-              IDS.map(
-                (id) =>
-                  matrix[method][id]
-              )
-          ),
-
-          record.gunEffort ??
-            (
-              oldMethod === 'Gun'
-                ? oldEffort
-                : ''
-            ),
-
-          record.snareEffort ??
-            (
-              oldMethod === 'Snare'
-                ? oldEffort
-                : ''
-            ),
-
-          record.location?.latitude ?? '',
-          record.location?.longitude ?? '',
-          record.location?.accuracy ?? '',
-          record.location?.timestamp ?? '',
-
-          record.recordedAt,
-          record.updatedAt,
-          record.note,
-        ]
-      }
-    )
+        record.recordedAt,
+        record.updatedAt,
+        record.note,
+      ]
+    })
 
     const csv =
       '\ufeff' +
       [headers, ...rows]
-        .map(
-          (row) =>
-            row.map(csvCell).join(',')
+        .map((row) =>
+          row.map(csvCell).join(',')
         )
         .join('\r\n')
 
@@ -1709,45 +1331,34 @@ export default function App() {
   function exportJson() {
     download(
       `wis-backup-${today()}.json`,
-
       JSON.stringify(
         {
-          version: 3,
           app: 'WIs App',
-
-          exportedAt:
-            new Date().toISOString(),
-
+          version: 4,
+          exportedAt: new Date().toISOString(),
           records,
         },
-
         null,
         2
       ),
-
       'application/json'
     )
   }
 
   async function importJson(event) {
     const file = event.target.files?.[0]
-
     if (!file) return
 
     try {
-      const data = JSON.parse(
+      const backup = JSON.parse(
         await file.text()
       )
 
-      if (
-        !Array.isArray(data.records)
-      ) {
-        throw new Error(
-          'Invalid backup'
-        )
+      if (!Array.isArray(backup.records)) {
+        throw new Error('Invalid backup file.')
       }
 
-      for (const record of data.records) {
+      for (const record of backup.records) {
         if (
           typeof record.id !== 'string' ||
           !record.id ||
@@ -1756,7 +1367,7 @@ export default function App() {
           !(record.byMethod || record.counts)
         ) {
           throw new Error(
-            'Invalid record in backup'
+            'Invalid record in backup.'
           )
         }
 
@@ -1765,15 +1376,15 @@ export default function App() {
           !validLocation(record.location)
         ) {
           throw new Error(
-            'Invalid GPS coordinates'
+            'Invalid GPS coordinates.'
           )
         }
       }
 
       if (
         !window.confirm(
-          `Import ${data.records.length} records? ` +
-          'Existing IDs will be replaced.'
+          `Import ${backup.records.length} records? ` +
+          'Existing records with matching IDs will be replaced.'
         )
       ) {
         return
@@ -1781,25 +1392,20 @@ export default function App() {
 
       setBusy(true)
 
-      await databaseAction(
+      await dbAction(
         'putMany',
-        data.records
+        backup.records
       )
 
-      const updated =
-        await databaseAction('read')
-
-      setRecords(
-        sortRecords(updated)
-      )
+      const updated = await dbAction('read')
+      setRecords(sortRecords(updated))
 
       setMessage(
         'Records imported successfully.'
       )
     } catch (error) {
       setMessage(
-        'Import failed: ' +
-        error.message
+        'Import failed: ' + error.message
       )
     } finally {
       setBusy(false)
@@ -1808,22 +1414,18 @@ export default function App() {
   }
 
   // ----------------------------------------------------------
-  // Totals
+  // Derived summary
   // ----------------------------------------------------------
 
   const totalAnimals = countTotal(
     totalsOf(records)
   )
 
-  const formTotal =
-    METHODS.reduce(
-      (sum, method) =>
-        sum +
-        countTotal(
-          form.byMethod[method]
-        ),
-      0
-    )
+  const formTotal = METHODS.reduce(
+    (sum, method) =>
+      sum + countTotal(form.byMethod[method]),
+    0
+  )
 
   // ==========================================================
   // UI
@@ -1841,35 +1443,34 @@ export default function App() {
 
       <main className="app-main">
 
+        {/* BACK BUTTON */}
+
         {page !== 'home' && (
           <button
             className="back-button"
-            onClick={() => {
-              if (page === 'recordDetail') {
-                navigate('history')
-              } else {
-                navigate('home')
-              }
-            }}
+            onClick={() =>
+              page === 'detail'
+                ? navigate('history')
+                : navigate('home')
+            }
           >
-            {page === 'recordDetail'
+            {page === 'detail'
               ? '← History'
               : '← Home'}
           </button>
         )}
 
+        {/* MESSAGE */}
+
         {message && (
-          <div
-            className="notice"
-            role="status"
-          >
+          <div className="notice" role="status">
             {message}
           </div>
         )}
 
-        {/* ================================================
+        {/* ==================================================
             HOME
-        ================================================ */}
+        ================================================== */}
 
         {page === 'home' && (
           <>
@@ -1877,24 +1478,18 @@ export default function App() {
               <h2>Hunting Monitoring</h2>
 
               <p>
-                Record catches and monitor
+                Record animal catches and monitor
                 wildlife indicators.
               </p>
 
               <div className="summary-grid">
                 <div>
-                  <strong>
-                    {records.length}
-                  </strong>
-
+                  <strong>{records.length}</strong>
                   <span>Records</span>
                 </div>
 
                 <div>
-                  <strong>
-                    {totalAnimals}
-                  </strong>
-
+                  <strong>{totalAnimals}</strong>
                   <span>Animals</span>
                 </div>
               </div>
@@ -1908,77 +1503,60 @@ export default function App() {
                   'New Record',
                   'Record animal catches',
                 ],
-
                 [
                   'indicators',
                   '📊',
                   'Indicators',
-                  'Wildlife indicators and CPUE',
+                  'Six wildlife indicators',
                 ],
-
                 [
                   'history',
                   '📋',
                   'History',
-                  'Review recorded catches',
+                  'Review and edit catch records',
                 ],
-
                 [
                   'map',
                   '🗺️',
                   'Map',
-                  'GPS-based indicator map',
+                  'Indicators and GPS catch records',
                 ],
-
                 [
                   'export',
                   '📁',
                   'Export / Backup',
                   'CSV and JSON',
                 ],
-
                 [
                   'settings',
                   '⚙️',
                   'Settings',
                   'Password protected',
                 ],
-              ].map(
-                ([
-                  id,
-                  icon,
-                  label,
-                  description,
-                ]) => (
-                  <button
-                    key={id}
-                    onClick={() =>
-                      id === 'record'
-                        ? newRecord()
-                        : navigate(id)
-                    }
-                  >
-                    <span>{icon}</span>
+              ].map(([id, icon, label, description]) => (
+                <button
+                  key={id}
+                  onClick={() =>
+                    id === 'record'
+                      ? newRecord()
+                      : navigate(id)
+                  }
+                >
+                  <span>{icon}</span>
 
-                    <div>
-                      <strong>
-                        {label}
-                      </strong>
-
-                      <small>
-                        {description}
-                      </small>
-                    </div>
-                  </button>
-                )
-              )}
+                  <div>
+                    <strong>{label}</strong>
+                    <small>{description}</small>
+                  </div>
+                </button>
+              ))}
             </div>
           </>
         )}
 
-        {/* ================================================
-            NEW RECORD
-        ================================================ */}
+        {/* ==================================================
+            NEW / EDIT RECORD
+        ================================================== */}
 
         {page === 'record' && (
           <section className="card">
@@ -1991,32 +1569,24 @@ export default function App() {
             <h3>Capture date</h3>
 
             <div className="choice-buttons">
-              {[0, 1, 2].map(
-                (offset) => (
-                  <button
-                    key={offset}
-                    className={
-                      form.captureDate === today(offset)
-                        ? 'selected'
-                        : ''
-                    }
-                    onClick={() =>
-                      updateForm({
-                        captureDate:
-                          today(offset),
-                      })
-                    }
-                  >
-                    {
-                      [
-                        'Today',
-                        'Yesterday',
-                        'Two days ago',
-                      ][offset]
-                    }
-                  </button>
-                )
-              )}
+              {[0, 1, 2].map((offset) => (
+                <button
+                  key={offset}
+                  type="button"
+                  className={
+                    form.captureDate === today(offset)
+                      ? 'selected'
+                      : ''
+                  }
+                  onClick={() =>
+                    updateForm({
+                      captureDate: today(offset),
+                    })
+                  }
+                >
+                  {dateLabel(offset)}
+                </button>
+              ))}
             </div>
 
             <input
@@ -2025,8 +1595,7 @@ export default function App() {
               value={form.captureDate}
               onChange={(event) =>
                 updateForm({
-                  captureDate:
-                    event.target.value,
+                  captureDate: event.target.value,
                 })
               }
             />
@@ -2034,191 +1603,128 @@ export default function App() {
             <h3>Time of capture</h3>
 
             <div className="choice-buttons">
-              {PERIODS.map(
-                (period) => (
-                  <button
-                    key={period}
-                    className={
-                      form.period === period
-                        ? 'selected'
-                        : ''
-                    }
-                    onClick={() =>
-                      updateForm({
-                        period,
-                      })
-                    }
-                  >
-                    {period}
-                  </button>
-                )
-              )}
+              {PERIODS.map((period) => (
+                <button
+                  type="button"
+                  key={period}
+                  className={
+                    form.period === period
+                      ? 'selected'
+                      : ''
+                  }
+                  onClick={() =>
+                    updateForm({ period })
+                  }
+                >
+                  {period}
+                </button>
+              ))}
             </div>
 
             <h3>Animals caught</h3>
 
             <p className="muted">
-              Enter the number caught
-              by each hunting method.
+              Enter the number caught by each
+              hunting method.
             </p>
 
             <div className="animal-list">
-              {SPECIES.map(
-                (species) => (
-                  <div
-                    className="animal-row"
-                    key={species.id}
-                  >
-                    <div className="animal-name">
-                      <span>
-                        {species.icon}
-                      </span>
-
-                      <strong>
-                        {species.name}
-                      </strong>
-                    </div>
-
-                    <div className="method-grid">
-                      {METHODS.map(
-                        (method) => (
-                          <div
-                            className="method-count"
-                            key={method}
-                          >
-                            <span className="method-label">
-                              {method}
-                            </span>
-
-                            <div className="counter">
-                              <button
-                                type="button"
-                                aria-label={
-                                  `Decrease ${species.name} ${method}`
-                                }
-                                onClick={() =>
-                                  changeCount(
-                                    species.id,
-                                    method,
-                                    -1
-                                  )
-                                }
-                              >
-                                −
-                              </button>
-
-                              <strong>
-                                {
-                                  form.byMethod[method][
-                                    species.id
-                                  ]
-                                }
-                              </strong>
-
-                              <button
-                                type="button"
-                                aria-label={
-                                  `Increase ${species.name} ${method}`
-                                }
-                                onClick={() =>
-                                  changeCount(
-                                    species.id,
-                                    method,
-                                    1
-                                  )
-                                }
-                              >
-                                +
-                              </button>
-                            </div>
-                          </div>
-                        )
-                      )}
-                    </div>
+              {SPECIES.map((species) => (
+                <div
+                  className="animal-row"
+                  key={species.id}
+                >
+                  <div className="animal-name">
+                    <span>{species.icon}</span>
+                    <strong>{species.name}</strong>
                   </div>
-                )
-              )}
+
+                  <div className="method-grid">
+                    {METHODS.map((method) => (
+                      <div
+                        className="method-count"
+                        key={method}
+                      >
+                        <span className="method-label">
+                          {method}
+                        </span>
+
+                        <div className="counter">
+                          <button
+                            type="button"
+                            aria-label={
+                              `Decrease ${species.name}, ${method}`
+                            }
+                            onClick={() =>
+                              changeCount(
+                                species.id,
+                                method,
+                                -1
+                              )
+                            }
+                          >
+                            −
+                          </button>
+
+                          <strong>
+                            {
+                              form.byMethod[method][
+                                species.id
+                              ]
+                            }
+                          </strong>
+
+                          <button
+                            type="button"
+                            aria-label={
+                              `Increase ${species.name}, ${method}`
+                            }
+                            onClick={() =>
+                              changeCount(
+                                species.id,
+                                method,
+                                1
+                              )
+                            }
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
 
             <p className="total-line">
               Total animals:{' '}
-              <strong>
-                {formTotal}
-              </strong>
-            </p>
-
-            <h3>
-              Hunting effort (optional)
-            </h3>
-
-            <label className="field-label">
-              Gun: hunter-days
-            </label>
-
-            <input
-              type="number"
-              min="0"
-              step="any"
-              inputMode="decimal"
-              value={form.gunEffort}
-              onChange={(event) =>
-                updateForm({
-                  gunEffort:
-                    event.target.value,
-                })
-              }
-              placeholder="Hunter-days"
-            />
-
-            <label className="field-label">
-              Snare: trap-nights
-            </label>
-
-            <input
-              type="number"
-              min="0"
-              step="any"
-              inputMode="decimal"
-              value={form.snareEffort}
-              onChange={(event) =>
-                updateForm({
-                  snareEffort:
-                    event.target.value,
-                })
-              }
-              placeholder="Trap-nights"
-            />
-
-            <p className="muted">
-              Zero-catch records are allowed.
-              Effort is needed for CPUE.
+              <strong>{formTotal}</strong>
             </p>
 
             <h3>Notes (optional)</h3>
 
             <textarea
-              rows="2"
+              rows={3}
               value={form.note}
               onChange={(event) =>
                 updateForm({
-                  note:
-                    event.target.value,
+                  note: event.target.value,
                 })
               }
             />
 
             <p className="gps-hint">
-              ◎ GPS location will be
-              acquired automatically when
-              you save the record.
+              ◎ GPS location will be acquired
+              automatically when you save.
+              A failed GPS request will not
+              prevent the record from being saved.
             </p>
 
             <button
               className="primary-button"
-              disabled={
-                busy || !dbReady
-              }
               onClick={saveRecord}
+              disabled={busy || !dbReady}
             >
               {busy
                 ? 'Acquiring GPS / Saving...'
@@ -2227,9 +1733,9 @@ export default function App() {
           </section>
         )}
 
-        {/* ================================================
+        {/* ==================================================
             INDICATORS
-        ================================================ */}
+        ================================================== */}
 
         {page === 'indicators' && (
           <section className="card">
@@ -2240,25 +1746,21 @@ export default function App() {
             <select
               value={methodFilter}
               onChange={(event) =>
-                setMethodFilter(
-                  event.target.value
-                )
+                setMethodFilter(event.target.value)
               }
             >
               <option value="All">
                 All methods
               </option>
 
-              {METHODS.map(
-                (method) => (
-                  <option
-                    key={method}
-                    value={method}
-                  >
-                    {method}
-                  </option>
-                )
-              )}
+              {METHODS.map((method) => (
+                <option
+                  key={method}
+                  value={method}
+                >
+                  {method}
+                </option>
+              ))}
             </select>
 
             <h3>Month</h3>
@@ -2266,25 +1768,21 @@ export default function App() {
             <select
               value={monthFilter}
               onChange={(event) =>
-                setMonthFilter(
-                  event.target.value
-                )
+                setMonthFilter(event.target.value)
               }
             >
               <option value="All">
                 All months
               </option>
 
-              {months.map(
-                (month) => (
-                  <option
-                    key={month}
-                    value={month}
-                  >
-                    {month}
-                  </option>
-                )
-              )}
+              {months.map((month) => (
+                <option
+                  key={month}
+                  value={month}
+                >
+                  {month}
+                </option>
+              ))}
             </select>
 
             <div className="summary-grid">
@@ -2292,326 +1790,231 @@ export default function App() {
                 <strong>
                   {filteredRecords.length}
                 </strong>
-
                 <span>Records</span>
               </div>
 
               <div>
-                <strong>
-                  {indicators.total}
-                </strong>
-
+                <strong>{indicators.total}</strong>
                 <span>Animals</span>
               </div>
             </div>
 
             <div className="indicator-grid">
-              {INDICATORS.slice(0, 6).map(
-                ([id, label]) => (
-                  <div
-                    className="indicator-card"
-                    key={id}
-                  >
-                    <span>
-                      {label}
-                    </span>
-
-                    <strong>
-                      {fmt(
-                        indicators[id]
-                      )}
-                    </strong>
-                  </div>
-                )
-              )}
-
-              <div className="indicator-card">
-                <span>
-                  Gun CPUE
-                  (animals / hunter-day)
-                </span>
-
-                <strong>
-                  {fmt(
-                    calculateCpue(
-                      filteredRecords,
-                      'Gun'
-                    )
-                  )}
-                </strong>
-              </div>
-
-              <div className="indicator-card">
-                <span>
-                  Snare CPUE
-                  (animals / trap-night)
-                </span>
-
-                <strong>
-                  {fmt(
-                    calculateCpue(
-                      filteredRecords,
-                      'Snare'
-                    )
-                  )}
-                </strong>
-              </div>
+              {INDICATORS.map(([id, label]) => (
+                <div
+                  className="indicator-card"
+                  key={id}
+                >
+                  <span>{label}</span>
+                  <strong>
+                    {fmt(indicators[id])}
+                  </strong>
+                </div>
+              ))}
             </div>
 
             <h3>Species totals</h3>
 
-            {SPECIES.map(
-              (species) => (
-                <div
-                  className="species-total"
-                  key={species.id}
-                >
-                  <span>
-                    {species.name}
-                  </span>
-
-                  <strong>
-                    {
-                      counts[
-                        species.id
-                      ]
-                    }
-                  </strong>
-                </div>
-              )
-            )}
+            {SPECIES.map((species) => (
+              <div
+                className="species-total"
+                key={species.id}
+              >
+                <span>{species.name}</span>
+                <strong>
+                  {counts[species.id]}
+                </strong>
+              </div>
+            ))}
 
             <p className="muted">
-              Indicators are calculated
-              from hunting records,
-              not camera-trap detection rates.
+              Ratios with zero denominators are
+              displayed as N/A.
+            </p>
+
+            <p className="muted">
+              These indicators describe the species
+              composition of recorded catches.
+              Changes in hunting selectivity may also
+              affect their values.
             </p>
           </section>
         )}
 
-        {/* ================================================
-            HISTORY — CHRONOLOGICAL ORDER
-        ================================================ */}
+        {/* ==================================================
+            HISTORY
+        ================================================== */}
 
         {page === 'history' && (
           <section className="card">
             <h2>History</h2>
 
             <p className="muted">
-              Records are sorted by capture
-              date, newest first.
+              Sorted by capture date, newest first.
             </p>
 
-            <p>
-              {records.length} records
-            </p>
+            <p>{records.length} records</p>
 
             {records.length === 0 && (
               <p>No records yet.</p>
             )}
 
-            {records.map(
-              (record) => {
-                const matrix =
-                  getByMethod(record)
+            {records.map((record) => {
+              const matrix = getByMethod(record)
 
-                const total =
-                  METHODS.reduce(
-                    (sum, method) =>
-                      sum +
-                      countTotal(
-                        matrix[method]
-                      ),
-                    0
-                  )
+              return (
+                <div
+                  className="history-record"
+                  key={record.id}
+                >
+                  <strong>
+                    {record.captureDate}
+                    {' · '}
+                    {record.timePeriod ||
+                      record.period ||
+                      'Unknown'}
+                  </strong>
 
-                return (
-                  <div
-                    className="history-record"
-                    key={record.id}
-                  >
-                    <strong>
-                      {record.captureDate}
-                      {' · '}
-                      {
-                        record.timePeriod ||
-                        record.period
-                      }
-                    </strong>
+                  <p>
+                    Hunter: {record.hunterId}
+                  </p>
 
-                    <p>
-                      Hunter:{' '}
-                      {record.hunterId}
-                    </p>
+                  <p>
+                    Animals: {recordTotal(record)}
+                  </p>
 
-                    <p>
-                      Animals: {total}
-                    </p>
+                  {SPECIES.map((species) =>
+                    METHODS.map((method) => {
+                      const number =
+                        matrix[method][species.id]
 
-                    {SPECIES.map(
-                      (species) =>
-                        METHODS.map(
-                          (method) => {
-                            const number =
-                              matrix[method][
-                                species.id
-                              ]
-
-                            return number > 0 ? (
-                              <p
-                                key={
-                                  `${species.id}-${method}`
-                                }
-                              >
-                                {species.name}
-                                {' · '}
-                                {method}
-                                {': '}
-                                {number}
-                              </p>
-                            ) : null
+                      return number > 0 ? (
+                        <p
+                          key={
+                            `${species.id}-${method}`
                           }
-                        )
-                    )}
+                        >
+                          {species.name}
+                          {' · '}
+                          {method}: {number}
+                        </p>
+                      ) : null
+                    })
+                  )}
 
-                    {validLocation(
-                      record.location
-                    ) ? (
-                      <p className="muted">
-                        GPS recorded
-                      </p>
-                    ) : (
-                      <p className="muted">
-                        No GPS recorded
-                      </p>
-                    )}
+                  <p className="muted">
+                    {validLocation(record.location)
+                      ? 'GPS recorded'
+                      : 'No GPS recorded'}
+                  </p>
 
-                    <div className="history-actions">
-                      <button
-                        className="secondary-button"
-                        onClick={() =>
-                          openRecordDetail(
-                            record
-                          )
-                        }
-                      >
-                        View Location
-                      </button>
+                  <div
+                    className="history-actions"
+                    style={{ flexWrap: 'wrap' }}
+                  >
+                    <button
+                      className="secondary-button"
+                      onClick={() =>
+                        openRecordDetail(record)
+                      }
+                    >
+                      View Location
+                    </button>
 
-                      <button
-                        className="secondary-button"
-                        onClick={() =>
-                          editRecord(
-                            record
-                          )
-                        }
-                      >
-                        Edit
-                      </button>
+                    <button
+                      className="secondary-button"
+                      onClick={() =>
+                        editRecord(record)
+                      }
+                    >
+                      Edit
+                    </button>
 
-                      <button
-                        className="delete-button"
-                        onClick={() =>
-                          removeRecord(
-                            record
-                          )
-                        }
-                      >
-                        Delete
-                      </button>
-                    </div>
+                    <button
+                      className="delete-button"
+                      onClick={() =>
+                        deleteRecord(record)
+                      }
+                    >
+                      Delete
+                    </button>
                   </div>
-                )
-              }
-            )}
+                </div>
+              )
+            })}
           </section>
         )}
 
-        {/* ================================================
-            NEW: RECORD DETAIL + MAP
-        ================================================ */}
+        {/* ==================================================
+            RECORD DETAIL
+        ================================================== */}
 
-        {page === 'recordDetail' && (
+        {page === 'detail' && (
           <section className="card">
             <h2>Record Details</h2>
 
             {!selectedRecord ? (
-              <p>
-                Record not found.
-              </p>
+              <p>Record not found.</p>
             ) : (
               <>
                 <h3>
-                  {
-                    selectedRecord.captureDate
-                  }
+                  {selectedRecord.captureDate}
                 </h3>
 
                 <p>
                   Time:{' '}
-                  {
-                    selectedRecord.timePeriod ||
-                    selectedRecord.period
-                  }
+                  {selectedRecord.timePeriod ||
+                    selectedRecord.period ||
+                    'Unknown'}
                 </p>
 
                 <p>
-                  Hunter:{' '}
-                  {
-                    selectedRecord.hunterId
-                  }
+                  Hunter: {selectedRecord.hunterId}
                 </p>
 
-                <h3>
-                  Animals caught
-                </h3>
+                <h3>Animals caught</h3>
 
-                {SPECIES.map(
-                  (species) =>
-                    METHODS.map(
-                      (method) => {
-                        const number =
-                          getByMethod(
-                            selectedRecord
-                          )[method][species.id]
+                {SPECIES.map((species) =>
+                  METHODS.map((method) => {
+                    const number =
+                      getByMethod(selectedRecord)[
+                        method
+                      ][species.id]
 
-                        return number > 0 ? (
-                          <div
-                            className="species-total"
-                            key={
-                              `${species.id}-${method}`
-                            }
-                          >
-                            <span>
-                              {species.name}
-                              {' · '}
-                              {method}
-                            </span>
+                    return number > 0 ? (
+                      <div
+                        className="species-total"
+                        key={
+                          `${species.id}-${method}`
+                        }
+                      >
+                        <span>
+                          {species.name}
+                          {' · '}
+                          {method}
+                        </span>
 
-                            <strong>
-                              {number}
-                            </strong>
-                          </div>
-                        ) : null
-                      }
-                    )
+                        <strong>{number}</strong>
+                      </div>
+                    ) : null
+                  })
                 )}
+
+                <p>
+                  Total animals:{' '}
+                  <strong>
+                    {recordTotal(selectedRecord)}
+                  </strong>
+                </p>
 
                 {selectedRecord.note && (
                   <>
                     <h3>Notes</h3>
-
-                    <p>
-                      {
-                        selectedRecord.note
-                      }
-                    </p>
+                    <p>{selectedRecord.note}</p>
                   </>
                 )}
 
-                <h3>
-                  Recording Location
-                </h3>
+                <h3>Recording Location</h3>
 
                 <RecordLocationMap
                   record={selectedRecord}
@@ -2620,9 +2023,7 @@ export default function App() {
                 <button
                   className="secondary-button"
                   onClick={() =>
-                    editRecord(
-                      selectedRecord
-                    )
+                    editRecord(selectedRecord)
                   }
                 >
                   Edit Record
@@ -2632,37 +2033,67 @@ export default function App() {
           </section>
         )}
 
-        {/* ================================================
+        {/* ==================================================
             MAP
-        ================================================ */}
+        ================================================== */}
 
         {page === 'map' && (
           <section className="card map-card">
-            <h2>
-              Wildlife Indicators Map
-            </h2>
+            <h2>Map</h2>
 
-            <h3>Indicator</h3>
+            <h3>Display mode</h3>
 
-            <select
-              value={mapIndicator}
-              onChange={(event) =>
-                setMapIndicator(
-                  event.target.value
-                )
-              }
-            >
-              {INDICATORS.map(
-                ([id, label]) => (
-                  <option
-                    key={id}
-                    value={id}
-                  >
-                    {label}
-                  </option>
-                )
-              )}
-            </select>
+            <div className="choice-buttons">
+              <button
+                className={
+                  mapMode === 'indicators'
+                    ? 'selected'
+                    : ''
+                }
+                onClick={() =>
+                  setMapMode('indicators')
+                }
+              >
+                Wildlife Indicators
+              </button>
+
+              <button
+                className={
+                  mapMode === 'records'
+                    ? 'selected'
+                    : ''
+                }
+                onClick={() =>
+                  setMapMode('records')
+                }
+              >
+                Catch Records
+              </button>
+            </div>
+
+            {mapMode === 'indicators' && (
+              <>
+                <h3>Indicator</h3>
+
+                <select
+                  value={mapIndicator}
+                  onChange={(event) =>
+                    setMapIndicator(
+                      event.target.value
+                    )
+                  }
+                >
+                  {INDICATORS.map(([id, label]) => (
+                    <option
+                      key={id}
+                      value={id}
+                    >
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
 
             <h3>Hunting method</h3>
 
@@ -2678,16 +2109,14 @@ export default function App() {
                 All methods
               </option>
 
-              {METHODS.map(
-                (method) => (
-                  <option
-                    key={method}
-                    value={method}
-                  >
-                    {method}
-                  </option>
-                )
-              )}
+              {METHODS.map((method) => (
+                <option
+                  key={method}
+                  value={method}
+                >
+                  {method}
+                </option>
+              ))}
             </select>
 
             <h3>Month</h3>
@@ -2704,38 +2133,33 @@ export default function App() {
                 All months
               </option>
 
-              {months.map(
-                (month) => (
-                  <option
-                    key={month}
-                    value={month}
-                  >
-                    {month}
-                  </option>
-                )
-              )}
+              {months.map((month) => (
+                <option
+                  key={month}
+                  value={month}
+                >
+                  {month}
+                </option>
+              ))}
             </select>
+
+            {/* Map settings */}
 
             <div className="map-settings-row">
               <label>
-                Cluster distance (m)
+                GPS clustering distance
 
                 <select
-                  value={
-                    settings.clusterDistance
-                  }
+                  value={settings.clusterDistance}
                   onChange={(event) =>
-                    setSettings(
-                      (previous) => ({
-                        ...previous,
-
-                        clusterDistance:
-                          Number(
-                            event.target.value
-                          ),
-                      })
-                    )
+                    setSettings((previous) => ({
+                      ...previous,
+                      clusterDistance: Number(
+                        event.target.value
+                      ),
+                    }))
                   }
+                  disabled={mapMode !== 'indicators'}
                 >
                   {[10, 20, 30, 50, 100].map(
                     (value) => (
@@ -2751,24 +2175,19 @@ export default function App() {
               </label>
 
               <label>
-                Circle radius (m)
+                WI circle radius
 
                 <select
-                  value={
-                    settings.circleRadius
-                  }
+                  value={settings.circleRadius}
                   onChange={(event) =>
-                    setSettings(
-                      (previous) => ({
-                        ...previous,
-
-                        circleRadius:
-                          Number(
-                            event.target.value
-                          ),
-                      })
-                    )
+                    setSettings((previous) => ({
+                      ...previous,
+                      circleRadius: Number(
+                        event.target.value
+                      ),
+                    }))
                   }
+                  disabled={mapMode !== 'indicators'}
                 >
                   {[10, 20, 30, 50, 100].map(
                     (value) => (
@@ -2784,69 +2203,66 @@ export default function App() {
               </label>
             </div>
 
-            {/* Color legend */}
+            {/* WI color legend */}
 
-            <div className="map-legend">
-              <div className="legend-gradient" />
+            {mapMode === 'indicators' && (
+              <>
+                <div className="map-legend">
+                  <div className="legend-gradient" />
 
-              <div className="legend-labels">
-                <span>
-                  {fmt(
-                    mapScale.min,
-                    2
-                  )}
-                </span>
+                  <div className="legend-labels">
+                    <span>
+                      {fmt(mapScale.min, 2)}
+                    </span>
 
-                <span>
-                  {fmt(
-                    mapScale.middle,
-                    2
-                  )}
-                </span>
+                    <span>
+                      {fmt(mapScale.middle, 2)}
+                    </span>
 
-                <span>
-                  {fmt(
-                    mapScale.max,
-                    2
-                  )}
-                </span>
-              </div>
-            </div>
+                    <span>
+                      {fmt(mapScale.max, 2)}
+                    </span>
+                  </div>
+                </div>
 
-            <p className="muted">
-              {FIXED_SCALES[mapIndicator]
-                ? 'Fixed color scale: red = lower, yellow = middle, green = higher.'
-                : 'Relative color scale based on the observed values.'}
-            </p>
+                <p className="muted">
+                  {FIXED_SCALES[mapIndicator]
+                    ? 'Fixed color scale: red = low, yellow = intermediate, green = high.'
+                    : 'Relative color scale based on observed values.'}
+                  {' '}
+                  Grey = N/A.
+                </p>
+              </>
+            )}
+
+            {/* Map summary */}
 
             <div className="map-summary">
               <span>
-                GPS records:{' '}
-                {gpsRecords.length}
+                GPS records: {gpsRecords.length}
               </span>
 
               <span>
-                Clusters:{' '}
-                {clusters.length}
+                {mapMode === 'indicators'
+                  ? `Clusters: ${clusters.length}`
+                  : `Locations: ${rawMapPoints.length}`}
               </span>
 
               <span>
                 Excluded:{' '}
-                {
-                  filteredRecords.length -
-                  gpsRecords.length
-                }
+                {filteredRecords.length -
+                  gpsRecords.length}
               </span>
             </div>
 
-            {/* OpenStreetMap */}
+            {/* Map */}
 
             <div className="map-container">
               <MapContainer
                 center={[2.5, 15.0]}
                 zoom={9}
-                scrollWheelZoom={true}
                 className="leaflet-map"
+                scrollWheelZoom
               >
                 <TileLayer
                   attribution="&copy; OpenStreetMap contributors"
@@ -2854,23 +2270,19 @@ export default function App() {
                   maxZoom={19}
                 />
 
-                <FitBounds
-                  clusters={clusters}
-                />
+                <FitMap points={mapPoints} />
 
-                {clusters.map(
-                  (cluster) => {
+                {/* Wildlife indicator circles */}
+
+                {mapMode === 'indicators' &&
+                  clusters.map((cluster) => {
                     const value =
-                      cluster.metrics[
-                        mapIndicator
-                      ]
+                      cluster.metrics[mapIndicator]
 
-                    const fill =
-                      getColor(
-                        value,
-                        mapScale.min,
-                        mapScale.max
-                      )
+                    const fill = getColor(
+                      value,
+                      mapScale
+                    )
 
                     return (
                       <Circle
@@ -2879,11 +2291,9 @@ export default function App() {
                           cluster.latitude,
                           cluster.longitude,
                         ]}
-                        radius={
-                          Number(
-                            settings.circleRadius
-                          )
-                        }
+                        radius={Number(
+                          settings.circleRadius
+                        )}
                         pathOptions={{
                           color: fill,
                           fillColor: fill,
@@ -2894,33 +2304,27 @@ export default function App() {
                         <Popup>
                           <div className="map-popup">
                             <h3>
-                              Cluster{' '}
-                              {cluster.id}
+                              Cluster {cluster.id}
                             </h3>
 
                             <p>
                               Records:{' '}
-                              {
-                                cluster.records.length
-                              }
+                              {cluster.records.length}
                             </p>
 
                             <p>
                               Animals:{' '}
-                              {
-                                cluster.metrics.total
-                              }
+                              {cluster.metrics.total}
                             </p>
 
                             <p>
-                              GPS:{' '}
-                              {
-                                cluster.latitude.toFixed(6)
-                              }
-                              {', '}
-                              {
-                                cluster.longitude.toFixed(6)
-                              }
+                              Latitude:{' '}
+                              {cluster.latitude.toFixed(6)}
+                            </p>
+
+                            <p>
+                              Longitude:{' '}
+                              {cluster.longitude.toFixed(6)}
                             </p>
 
                             <hr />
@@ -2943,11 +2347,8 @@ export default function App() {
 
                             {SPECIES.map(
                               (species) => (
-                                <p
-                                  key={species.id}
-                                >
-                                  {species.name}
-                                  {': '}
+                                <p key={species.id}>
+                                  {species.name}:{' '}
                                   {
                                     cluster.counts[
                                       species.id
@@ -2960,30 +2361,145 @@ export default function App() {
                         </Popup>
                       </Circle>
                     )
-                  }
-                )}
+                  })}
+
+                {/* Individual catch record locations */}
+
+                {mapMode === 'records' &&
+                  rawMapPoints.map((point) => (
+                    <CircleMarker
+                      key={point.id}
+                      center={[
+                        point.latitude,
+                        point.longitude,
+                      ]}
+                      radius={
+                        point.records.length > 1
+                          ? 9
+                          : 6
+                      }
+                      pathOptions={{
+                        color: '#175ca1',
+                        fillColor: '#3587d7',
+                        fillOpacity: 0.85,
+                        weight: 2,
+                      }}
+                    >
+                      <Popup>
+                        <div className="map-popup">
+                          <h3>
+                            Catch Records
+                          </h3>
+
+                          <p>
+                            Records at this location:{' '}
+                            {point.records.length}
+                          </p>
+
+                          <p>
+                            GPS:{' '}
+                            {point.latitude.toFixed(6)}
+                            {', '}
+                            {point.longitude.toFixed(6)}
+                          </p>
+
+                          <hr />
+
+                          {sortRecords(
+                            point.records
+                          ).map((record) => {
+                            const matrix =
+                              getByMethod(record)
+
+                            return (
+                              <div key={record.id}>
+                                <p>
+                                  <strong>
+                                    {record.captureDate}
+                                  </strong>
+                                </p>
+
+                                <p>
+                                  Hunter:{' '}
+                                  {record.hunterId}
+                                </p>
+
+                                <p>
+                                  Animals:{' '}
+                                  {recordTotal(record)}
+                                </p>
+
+                                {SPECIES.map(
+                                  (species) =>
+                                    METHODS.map(
+                                      (method) => {
+                                        const number =
+                                          matrix[method][
+                                            species.id
+                                          ]
+
+                                        return number > 0 ? (
+                                          <p
+                                            key={
+                                              `${record.id}-${species.id}-${method}`
+                                            }
+                                          >
+                                            {species.name}
+                                            {' · '}
+                                            {method}: {number}
+                                          </p>
+                                        ) : null
+                                      }
+                                    )
+                                )}
+
+                                <hr />
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </Popup>
+                    </CircleMarker>
+                  ))}
               </MapContainer>
             </div>
 
+            {mapPoints.length === 0 && (
+              <div
+                className="notice"
+                style={{ marginTop: 15 }}
+              >
+                No GPS records available
+                for the selected filters.
+              </div>
+            )}
+
             <p className="muted">
               Map tiles require internet access.
-              GPS points are grouped using
-              complete-linkage clustering.
-              Colors are visualization values,
-              not ecological safety thresholds.
+              Capture records and indicators are
+              calculated from locally stored data.
             </p>
 
-            {clusters.length === 0 && (
-              <div className="notice">
-                No valid GPS clusters.
-              </div>
+            <p className="muted">
+              GPS coordinates represent the
+              recording location, which may differ
+              from the actual capture location.
+            </p>
+
+            {mapMode === 'indicators' && (
+              <p className="muted">
+                Wildlife indicators are calculated
+                for GPS clusters using complete-linkage
+                clustering. A green color does not
+                establish ecological sustainability.
+              </p>
             )}
           </section>
         )}
 
-        {/* ================================================
-            EXPORT
-        ================================================ */}
+        {/* ==================================================
+            EXPORT / BACKUP
+        ================================================== */}
 
         {page === 'export' && (
           <section className="card">
@@ -2992,6 +2508,7 @@ export default function App() {
             <button
               className="primary-button"
               onClick={exportCsv}
+              disabled={!dbReady}
             >
               Download CSV
             </button>
@@ -2999,6 +2516,7 @@ export default function App() {
             <button
               className="secondary-button"
               onClick={exportJson}
+              disabled={!dbReady}
             >
               Download JSON Backup
             </button>
@@ -3008,21 +2526,28 @@ export default function App() {
             <input
               type="file"
               accept=".json,application/json"
-              disabled={busy}
+              disabled={busy || !dbReady}
               onChange={importJson}
             />
 
             <p className="muted">
-              Records with matching IDs are
-              replaced. Imported records can
-              also be displayed on the Map.
+              Importing a backup adds records.
+              Records with matching IDs are replaced.
+              Records not in the backup are retained.
+            </p>
+
+            <p className="muted">
+              Data is stored locally on this device.
+              GitHub Pages does not automatically
+              synchronize records between devices.
+              Export backups regularly.
             </p>
           </section>
         )}
 
-        {/* ================================================
+        {/* ==================================================
             SETTINGS PASSWORD
-        ================================================ */}
+        ================================================== */}
 
         {page === 'settings' &&
           !settingsUnlocked && (
@@ -3040,9 +2565,7 @@ export default function App() {
                 placeholder="Password"
                 value={password}
                 onChange={(event) =>
-                  setPassword(
-                    event.target.value
-                  )
+                  setPassword(event.target.value)
                 }
               />
 
@@ -3050,8 +2573,7 @@ export default function App() {
                 className="primary-button"
                 onClick={() => {
                   if (
-                    password ===
-                    SETTINGS_PASSWORD
+                    password === SETTINGS_PASSWORD
                   ) {
                     setSettingsUnlocked(true)
                     setPassword('')
@@ -3068,9 +2590,9 @@ export default function App() {
             </section>
           )}
 
-        {/* ================================================
-            SETTINGS CONTENT
-        ================================================ */}
+        {/* ==================================================
+            SETTINGS
+        ================================================== */}
 
         {page === 'settings' &&
           settingsUnlocked && (
@@ -3083,14 +2605,10 @@ export default function App() {
                 value={settings.hunterId}
                 placeholder="e.g. H01"
                 onChange={(event) =>
-                  setSettings(
-                    (previous) => ({
-                      ...previous,
-
-                      hunterId:
-                        event.target.value,
-                    })
-                  )
+                  setSettings((previous) => ({
+                    ...previous,
+                    hunterId: event.target.value,
+                  }))
                 }
               />
 
@@ -3101,108 +2619,89 @@ export default function App() {
               <input
                 type="number"
                 min="1"
-                value={
-                  settings.maxGpsAccuracy
-                }
+                value={settings.maxGpsAccuracy}
                 onChange={(event) =>
-                  setSettings(
-                    (previous) => ({
-                      ...previous,
+                  setSettings((previous) => ({
+                    ...previous,
 
-                      maxGpsAccuracy:
-                        Math.max(
-                          1,
-                          Number(
-                            event.target.value
-                          ) || 1
-                        ),
-                    })
-                  )
+                    maxGpsAccuracy: Math.max(
+                      1,
+                      Number(event.target.value) || 1
+                    ),
+                  }))
                 }
               />
 
-              <h3>
-                Species parameters
-              </h3>
+              <h3>Species parameters</h3>
 
               <p className="muted">
-                Mean mass: Hongo et al. (2022).
-                rmax: values attributed to
-                Fa et al. (2015).
+                Mean body mass and rmax values
+                are editable. Verify the parameter
+                sources before scientific analysis.
               </p>
 
-              {SPECIES.map(
-                (species) => (
-                  <div
-                    className="parameter-row"
-                    key={species.id}
-                  >
-                    <strong>
-                      {species.name}
-                    </strong>
+              {SPECIES.map((species) => (
+                <div
+                  className="parameter-row"
+                  key={species.id}
+                >
+                  <strong>
+                    {species.name}
+                  </strong>
 
-                    <div className="map-settings-row">
-                      <label>
-                        Mean mass (kg)
+                  <div className="map-settings-row">
+                    <label>
+                      Mean mass (kg)
 
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={
-                            settings.masses[
-                              species.id
-                            ]
-                          }
-                          onChange={(event) =>
-                            setSettings(
-                              (previous) => ({
-                                ...previous,
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={
+                          settings.masses[species.id]
+                        }
+                        onChange={(event) =>
+                          setSettings((previous) => ({
+                            ...previous,
 
-                                masses: {
-                                  ...previous.masses,
+                            masses: {
+                              ...previous.masses,
 
-                                  [species.id]:
-                                    event.target.value,
-                                },
-                              })
-                            )
-                          }
-                        />
-                      </label>
+                              [species.id]:
+                                event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
 
-                      <label>
-                        rmax
+                    <label>
+                      rmax
 
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={
-                            settings.rmax[
-                              species.id
-                            ]
-                          }
-                          onChange={(event) =>
-                            setSettings(
-                              (previous) => ({
-                                ...previous,
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={
+                          settings.rmax[species.id]
+                        }
+                        onChange={(event) =>
+                          setSettings((previous) => ({
+                            ...previous,
 
-                                rmax: {
-                                  ...previous.rmax,
+                            rmax: {
+                              ...previous.rmax,
 
-                                  [species.id]:
-                                    event.target.value,
-                                },
-                              })
-                            )
-                          }
-                        />
-                      </label>
-                    </div>
+                              [species.id]:
+                                event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
                   </div>
-                )
-              )}
+                </div>
+              ))}
 
               <button
                 className="secondary-button"
@@ -3214,11 +2713,10 @@ export default function App() {
               </button>
             </section>
           )}
-
       </main>
 
       <footer className="app-footer">
-        WIs App v3.1 · Wildlife Monitoring
+        WIs App v4.0 · Wildlife Monitoring
       </footer>
     </div>
   )
