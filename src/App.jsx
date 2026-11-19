@@ -12,9 +12,10 @@ import L from 'leaflet'
 
 import 'leaflet/dist/leaflet.css'
 import './App.css'
+import Messages from './Messages.jsx'
 
 // ============================================================
-// WIs App v4.0
+// WIs App v4.1
 // Wildlife Indicators Monitoring
 //
 // - Catch records only
@@ -643,6 +644,17 @@ function getColor(value, scale) {
 // Mean mass and reciprocal mean-rmax
 // retain observed-value relative scales.
 
+// R/B ratio only: data-volume cue from Projet Coméca (2024).
+// The 30-duiker target derives from context-specific snare data;
+// it is not a validated statistical threshold for all hunting methods.
+function rbSampleOpacity(counts) {
+  const duikers =
+    (counts.blue || 0) +
+    (counts.peters || 0) +
+    (counts.bay || 0)
+  return 0.12 + 0.53 * clamp(duikers / 30, 0, 1)
+}
+
 function getMapScale(indicator, clusters) {
   if (FIXED_SCALES[indicator]) {
     return FIXED_SCALES[indicator]
@@ -1079,7 +1091,7 @@ export default function App() {
 
       setRecords(sortRecords(updated))
       setForm(blankForm())
-      setPage('history')
+      setPage('home')
 
       if (location) {
         const accuracy = Number(location.accuracy)
@@ -1510,6 +1522,12 @@ export default function App() {
                   'Six wildlife indicators',
                 ],
                 [
+                  'messages',
+                  '✉️',
+                  'Messages',
+                  'Online researcher / hunter chat',
+                ],
+                [
                   'history',
                   '📋',
                   'History',
@@ -1552,6 +1570,10 @@ export default function App() {
               ))}
             </div>
           </>
+        )}
+
+        {page === 'messages' && (
+          <Messages hunterId={settings.hunterId} />
         )}
 
         {/* ==================================================
@@ -2232,6 +2254,16 @@ export default function App() {
                   {' '}
                   Grey = N/A.
                 </p>
+
+                {mapIndicator === 'rb' && (
+                  <p className="muted">
+                    R/B circle opacity increases with the total number of
+                    red + blue duikers: 0 = 12%, 30 or more = 65%.
+                    The 30-duiker target is based on Projet Coméca (2024)
+                    snare-catch monitoring and is not a universal
+                    reliability threshold.
+                  </p>
+                )}
               </>
             )}
 
@@ -2297,7 +2329,10 @@ export default function App() {
                         pathOptions={{
                           color: fill,
                           fillColor: fill,
-                          fillOpacity: 0.75,
+                          fillOpacity:
+                            mapIndicator === 'rb'
+                              ? rbSampleOpacity(cluster.counts)
+                              : 0.75,
                           weight: 2,
                         }}
                       >
@@ -2316,6 +2351,15 @@ export default function App() {
                               Animals:{' '}
                               {cluster.metrics.total}
                             </p>
+
+                            {mapIndicator === 'rb' && (
+                              <p>
+                                Red + blue duikers:{' '}
+                                {(cluster.counts.blue || 0) +
+                                  (cluster.counts.peters || 0) +
+                                  (cluster.counts.bay || 0)} / 30 target
+                              </p>
+                            )}
 
                             <p>
                               Latitude:{' '}
@@ -2713,10 +2757,20 @@ export default function App() {
               </button>
             </section>
           )}
+        {page !== 'home' && (
+          <button
+            type="button"
+            className="back-button bottom-home-button"
+            disabled={busy}
+            onClick={() => navigate('home')}
+          >
+            {page === 'record' ? 'Cancel / Home' : '← Home'}
+          </button>
+        )}
       </main>
 
       <footer className="app-footer">
-        WIs App v4.0 · Wildlife Monitoring
+        WIs App v4.1 · Wildlife Monitoring
       </footer>
     </div>
   )
